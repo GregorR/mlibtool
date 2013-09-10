@@ -31,7 +31,7 @@
              "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
              "__GNU__" /* GNU Hurd */
 
-/* macro to fail with perror if a command fails */
+/* macro to fail with perror if a function fails */
 #define ORX(into, func, bad, args) do { \
     (into) = func args; \
     if ((into) == (bad)) { \
@@ -40,8 +40,8 @@
     } \
 } while (0)
 
-/* macro to fail to libtool if a command fails (must have struct Options *opt as a
- * local variable) */
+/* macro to fail to libtool if a function fails (must have struct Options *opt
+ * as a local variable) */
 #define ORL(into, func, bad, args) do { \
     (into) = func args; \
     if ((into) == bad) { \
