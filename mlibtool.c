@@ -161,7 +161,8 @@ static int systemIsSane(char *cc)
 enum Mode {
     MODE_UNKNOWN = 0,
     MODE_COMPILE,
-    MODE_LINK
+    MODE_LINK,
+    MODE_INSTALL
 };
 
 
@@ -260,6 +261,7 @@ static int checkLoSanity(struct Options *opt, char *cc)
 static void usage();
 static void ltcompile(struct Options *);
 static void ltlink(struct Options *);
+static void ltinstall(struct Options *);
 
 int main(int argc, char **argv)
 {
@@ -274,9 +276,13 @@ int main(int argc, char **argv)
     memset(&opt, 0, sizeof(opt));
 
     /* first argument must be target libtool */
+    if (argc < 2 || argv[1][0] == '-') {
+        usage();
+    }
+    for (argi = 1; argi < argc && argv[argi][0] != '-'; argi++);
 
     /* collect arguments up to --mode */
-    for (argi = 2; argi < argc; argi++) {
+    for (; argi < argc; argi++) {
         char *arg = argv[argi];
 
         if (!strcmp(arg, "-n") || !strcmp(arg, "--dry-run")) {
@@ -328,6 +334,8 @@ int main(int argc, char **argv)
         mode = MODE_COMPILE;
     } else if (!strcmp(modeS, "link")) {
         mode = MODE_LINK;
+    } else if (!strcmp(modeS, "install")) {
+        mode = MODE_INSTALL;
     }
 
     /* next argument is the compiler, use that to check for sanity */
@@ -336,6 +344,9 @@ int main(int argc, char **argv)
             sane = systemIsSane(opt.cmd[0]);
         } else if (mode == MODE_LINK) {
             sane = checkLoSanity(&opt, opt.cmd[0]);
+        } else if (mode == MODE_INSTALL) {
+            /* we can always do something here */
+            sane = 1;
         }
     }
 
@@ -349,8 +360,11 @@ int main(int argc, char **argv)
     } else if (mode == MODE_LINK) {
         ltlink(&opt);
 
+    } else if (mode == MODE_INSTALL) {
+        ltinstall(&opt);
+
     } else {
-        exit(1);
+        execLibtool(&opt);
 
     }
 
@@ -367,7 +381,7 @@ static void usage()
         "<mode> must be one of the following:\n"
         "\tcompile: compile a source file into a libtool object\n"
         /*"\texecute: automatically set library path, then run a program\n"*/
-        /*"\tinstall: install libraries or executables\n"*/
+        "\tinstall: install libraries or executables\n"
         "\tlink: create a library or an executable\n"
         "\n");
     printf("mlibtool is a mini version of libtool for sensible systems. If you're\n"
@@ -1091,6 +1105,101 @@ static void ltlink(struct Options *opt)
     FREE_BUFFER(dependencyLibs);
     FREE_BUFFER(outAr);
     FREE_BUFFER(outCmd);
+}
+
+static void ltinstall(struct Options *opt)
+{
+    char *laFile = NULL;
+    size_t i, laPos = 0;
+
+    /* skip any options */
+    for (i = 1; opt->cmd[i] && opt->cmd[i][0] == '-'; i++);
+
+    /* check if this is a .la file */
+    if (opt->cmd[i]) {
+        char *ext = strrchr(opt->cmd[i], '.');
+        if (ext && !strcmp(ext, ".la")) {
+            laFile = opt->cmd[i];
+            laPos = i;
+        }
+    }
+
+    if (!laFile) {
+        /* Simple case: Just run the command directly */
+        spawn(opt, opt->cmd);
+
+    } else {
+        /* install all the files specified in the .la */
+        struct Buffer cpcmd;
+        FILE *f;
+        char *dirC, *dir;
+        size_t cpLaPos;
+
+        /* /bin/install doesn't support symbolic links, so use something that does */
+        INIT_BUFFER(cpcmd);
+        WRITE_BUFFER(cpcmd, "cp");
+        WRITE_BUFFER(cpcmd, "-P");
+        WRITE_BUFFER(cpcmd, "-R");
+        cpLaPos = cpcmd.bufused;
+        for (i = laPos; opt->cmd[i]; i++)
+            WRITE_BUFFER(cpcmd, opt->cmd[i]);
+        WRITE_BUFFER(cpcmd, NULL);
+
+        /* get the directory info */
+        SF(dirC, strdup, NULL, (laFile));
+        dir = dirname(dirC);
+
+        /* open the file */
+        f = fopen(laFile, "r");
+        if (f) {
+            char *lbuf;
+            size_t lbufsz, lbufused;
+            lbufsz = 32;
+            SF(lbuf, malloc, NULL, (lbufsz));
+
+            while (fgets(lbuf, lbufsz, f)) {
+                lbufused = strlen(lbuf);
+
+                /* read in the remainder of the line */
+                while (lbuf[lbufused-1] != '\n') {
+                    lbufsz *= 2;
+                    SF(lbuf, realloc, NULL, (lbuf, lbufsz));
+                    if (!fgets(lbuf + lbufused, lbufsz - lbufused, f)) break;
+                    lbufused = strlen(lbuf);
+                }
+
+                /* is this a library_names or old_library line? */
+                if (!strncmp(lbuf, "library_names='", 15) ||
+                    !strncmp(lbuf, "old_library='", 13)) {
+                    char *part, *saveptr;
+                    char *dlibs = lbuf + 13 + (lbuf[0] == 'l' ? 2 : 0);
+                    char *end = strrchr(dlibs, '\'');
+                    if (end) *end = '\0';
+
+                    /* now go one by one through the libs */
+                    part = strtok_r(dlibs, " ", &saveptr);
+                    while (part) {
+                        /* and install it */
+                        char *fullName;
+                        SF(fullName, malloc, NULL, (strlen(dir) + strlen(part) + 8));
+                        sprintf(fullName, "%s/.libs/%s", dir, part);
+                        cpcmd.buf[cpLaPos] = fullName;
+                        spawn(opt, cpcmd.buf);
+                        free(fullName);
+
+                        part = strtok_r(NULL, " ", &saveptr);
+                    }
+                }
+            }
+
+            free(lbuf);
+            fclose(f);
+        }
+
+        free(dirC);
+        FREE_BUFFER(cpcmd);
+
+    }
 }
 
 #endif /* _POSIX_VERSION */
