@@ -45,6 +45,16 @@
              "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
              "__GNU__" /* GNU Hurd */
 
+/* our binary runner script */
+#define BIN_SCRIPT_1 "#!/bin/sh\n" \
+                     PACKAGE_HEADER \
+                     "DIR=`dirname \"$0\"`\n" \
+                     "BIN=`basename \"$0\"`\n" \
+                     "LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:}"
+#define BIN_SCRIPT_2 "\"\n" \
+                     "export LD_LIBRARY_PATH\n" \
+                     "exec \"$DIR/.libs/$BIN\" \"$@\"\n"
+
 /* macro to fail with perror if a function fails */
 #define ORX(into, func, bad, args) do { \
     (into) = func args; \
@@ -656,10 +666,25 @@ static void ltcompile(struct Options *opt)
     FREE_BUFFER(outCmd);
 }
 
+/* add a canonicalized library dir to the list */
+static void addLibDir(struct Buffer *libDirs,
+                      struct Buffer *tofree,
+                      char *dir)
+{
+    char *libDir;
+    if ((libDir = realpath(dir, NULL))) {
+        WRITE_BUFFER(*libDirs, libDir);
+        WRITE_BUFFER(*tofree, libDir);
+    } else {
+        WRITE_BUFFER(*libDirs, dir);
+    }
+}
+
 /* the most complicated part of linking is linking in .la files */
 static void linkLaFile(struct Options *opt,
                        int buildLib,
                        struct Buffer *outCmd,
+                       struct Buffer *libDirs,
                        struct Buffer *dependencyLibs,
                        struct Buffer *tofree,
                        char *arg)
@@ -684,6 +709,7 @@ static void linkLaFile(struct Options *opt,
     sprintf(aarg, "-L%s/.libs", laDir);
     WRITE_BUFFER(*outCmd, aarg);
     WRITE_BUFFER(*tofree, aarg);
+    addLibDir(libDirs, tofree, aarg + 2);
 
     /* if there's only a .a, libtool specifies we bring in the whole archive */
     if (buildLib) {
@@ -759,7 +785,7 @@ static void linkLaFile(struct Options *opt,
                     /* if this is a .la file, need to recurse */
                     char *ext = strrchr(part, '.');
                     if (ext && !strcmp(ext, ".la")) {
-                        linkLaFile(opt, buildLib, outCmd, NULL, tofree, part);
+                        linkLaFile(opt, buildLib, outCmd, libDirs, NULL, tofree, part);
 
                     } else {
                         /* otherwise, just add it */
@@ -783,7 +809,7 @@ static void linkLaFile(struct Options *opt,
 
 static void ltlink(struct Options *opt)
 {
-    struct Buffer outCmd, outAr, dependencyLibs, tofree;
+    struct Buffer outCmd, outAr, libDirs, dependencyLibs, tofree;
     size_t i;
     char *ext;
     int tmpi;
@@ -840,14 +866,18 @@ static void ltlink(struct Options *opt)
     /* allocate our buffers */
     INIT_BUFFER(outCmd);
     INIT_BUFFER(outAr);
+    INIT_BUFFER(libDirs);
     INIT_BUFFER(dependencyLibs);
     INIT_BUFFER(tofree);
 
     WRITE_BUFFER(outCmd, opt->cmd[0]);
-    WRITE_BUFFER(outCmd, "-L.libs");
     WRITE_BUFFER(outAr, "ar");
     WRITE_BUFFER(outAr, "rc");
     WRITE_BUFFER(outAr, "a.a"); /* to be replaced */
+
+    /* `pwd`/.libs is always in -L */
+    WRITE_BUFFER(outCmd, "-L.libs");
+    addLibDir(&libDirs, &tofree, ".libs");
 
     /* read in the command */
     for (i = 1; opt->cmd[i]; i++) {
@@ -870,6 +900,7 @@ static void ltlink(struct Options *opt)
                 /* need both the -L path specified and .../.libs */
                 WRITE_BUFFER(outCmd, arg);
                 WRITE_BUFFER(dependencyLibs, arg);
+                addLibDir(&libDirs, &tofree, arg + 2);
 
                 ORL(llibs, malloc, NULL, (strlen(arg) + 7));
                 sprintf(llibs, "%s/.libs", arg);
@@ -877,6 +908,7 @@ static void ltlink(struct Options *opt)
                 WRITE_BUFFER(outCmd, llibs);
                 WRITE_BUFFER(dependencyLibs, llibs);
                 WRITE_BUFFER(tofree, llibs);
+                addLibDir(&libDirs, &tofree, llibs + 2);
 
             } else if (!strncmp(arg, "-l", 2)) {
                 WRITE_BUFFER(outCmd, arg);
@@ -971,7 +1003,7 @@ static void ltlink(struct Options *opt)
                 free(loDirC);
 
             } else if (ext && !strcmp(ext, ".la")) {
-                linkLaFile(opt, buildLib, &outCmd, &dependencyLibs, &tofree, arg);
+                linkLaFile(opt, buildLib, &outCmd, &libDirs, &dependencyLibs, &tofree, arg);
 
             } else {
                 WRITE_BUFFER(outAr, arg);
@@ -1004,20 +1036,59 @@ static void ltlink(struct Options *opt)
     outDir = dirname(outDirC);
     ORL(outBaseC, strdup, NULL, (outName));
     outBase = basename(outBaseC);
-    ext = strrchr(outBase, '.');
-    if (ext) *ext = '\0';
 
     /* make the .libs dir */
     ORL(libsDir, malloc, NULL, (strlen(outDir) + 7));
     sprintf(libsDir, "%s/.libs", outDir);
     if (!opt->dryRun) mkdir(libsDir, 0777); /* ignore errors */
 
-    /* building a binary is super-simple */
+    /* building a binary involves making a wrapper */
     if (buildBinary) {
+        char *realName;
+
+        ORL(realName, malloc, NULL, (strlen(outDir) + strlen(outBase) + 8));
+        sprintf(realName, "%s/.libs/%s", outDir, outBase);
+
+        /* do the actual build */
+        outCmd.buf[outNamePos] = realName;
         WRITE_BUFFER(outCmd, NULL);
         spawn(opt, outCmd.buf);
         outCmd.bufused--;
+
+        /* then make the wrapper */
+        if (!opt->dryRun) {
+            FILE *f;
+            f = fopen(outName, "w");
+            if (!f) {
+                perror(outName);
+                execLibtool(opt);
+            }
+
+            fputs(BIN_SCRIPT_1, f);
+
+            /* write all the library paths */
+            for (i = 0; i < libDirs.bufused; i++) {
+                if (i != 0) fputs(":", f);
+                fputs(libDirs.buf[i], f);
+            }
+
+            if (fputs(BIN_SCRIPT_2, f) == EOF) {
+                perror(outName);
+                execLibtool(opt);
+            }
+
+            fclose(f);
+
+            /* now try to make it executable */
+            chmod(outName, 0755);
+        }
+
+        free(realName);
     }
+
+    /* the rest all require a shortname */
+    ext = strrchr(outBase, '.');
+    if (ext) *ext = '\0';
 
     /* building a .a library is mostly simple */
     if (buildA) {
@@ -1099,7 +1170,7 @@ static void ltlink(struct Options *opt)
         spawn(opt, outCmd.buf);
         outCmd.bufused--;
 
-        if (!avoidVersion) {
+        if (!opt->dryRun && !avoidVersion) {
             /* move it to the proper name */
             if ((tmpi = rename(sopath, longpath)) < 0) {
                 perror(longpath);
@@ -1187,18 +1258,31 @@ static void ltlink(struct Options *opt)
 
     FREE_BUFFER(tofree);
     FREE_BUFFER(dependencyLibs);
+    FREE_BUFFER(libDirs);
     FREE_BUFFER(outAr);
     FREE_BUFFER(outCmd);
 }
 
 static void ltinstall(struct Options *opt)
 {
-    char *laFile = NULL;
-    size_t i, laPos = 0;
-    char *dirC, *dir, *baseC, *base, *ext;
+    size_t i, j, laPos = 0;
+    char *dirC, *dir, *baseC, *base, *ext, *target;
+    struct Buffer installCmd, cpCmd, tofree;
+    int haveInst = 0, haveCp = 0;
 
-    /* skip any options */
-    for (i = 1; opt->cmd[i] && opt->cmd[i][0] == '-'; i++);
+    INIT_BUFFER(installCmd);
+    INIT_BUFFER(cpCmd);
+    INIT_BUFFER(tofree);
+
+    /* copy in the install command as stands */
+    WRITE_BUFFER(installCmd, opt->cmd[0]);
+    for (i = 1; opt->cmd[i] && opt->cmd[i][0] == '-'; i++) {
+        WRITE_BUFFER(installCmd, opt->cmd[i]);
+    }
+
+    /* and make a cp command for things that install doesn't support */
+    WRITE_BUFFER(cpCmd, "cp");
+    WRITE_BUFFER(cpCmd, "-P");
 
     /* if the command seems invalid, just run it */
     if (!opt->cmd[i]) {
@@ -1206,104 +1290,124 @@ static void ltinstall(struct Options *opt)
         return;
     }
 
-    /* check if this is a .la file */
-    ext = strrchr(opt->cmd[i], '.');
-    if (ext && !strcmp(ext, ".la")) {
-        laFile = opt->cmd[i];
-        laPos = i;
-    }
+    /* find the target */
+    for (j = i; opt->cmd[j]; j++);
+    j--;
+    target = opt->cmd[j];
+    opt->cmd[j] = NULL;
 
-    /* get the directory info */
-    ORL(dirC, strdup, NULL, (opt->cmd[i]));
-    dir = dirname(dirC);
-    ORL(baseC, strdup, NULL, (opt->cmd[i]));
-    base = basename(baseC);
+    /* and go through all the other files */
+    for (; opt->cmd[i]; i++) {
+        char *laFile = NULL;
 
-    if (!laFile) {
-        char *libsF;
-
-        /* check if there's a .libs version */
-        ORL(libsF, malloc, NULL, (strlen(dir) + strlen(base) + 8));
-        sprintf(libsF, "%s/.libs/%s", dir, base);
-        if (access(libsF, F_OK) == 0) {
-            /* use that one */
-            opt->cmd[i] = libsF;
+        /* check if this is a .la file */
+        ext = strrchr(opt->cmd[i], '.');
+        if (ext && !strcmp(ext, ".la")) {
+            laFile = opt->cmd[i];
+            laPos = i;
         }
 
-        /* Just run the command directly */
-        spawn(opt, opt->cmd);
+        /* get the directory info */
+        ORL(dirC, strdup, NULL, (opt->cmd[i]));
+        dir = dirname(dirC);
+        ORL(baseC, strdup, NULL, (opt->cmd[i]));
+        base = basename(baseC);
 
-        free(libsF);
+        if (!laFile) {
+            char *libsF;
 
-    } else {
-        /* install all the files specified in the .la */
-        struct Buffer cpcmd;
-        FILE *f;
-        size_t cpLaPos;
+            haveInst = 1;
 
-        /* /bin/install doesn't support symbolic links, so use something that does */
-        INIT_BUFFER(cpcmd);
-        WRITE_BUFFER(cpcmd, "cp");
-        WRITE_BUFFER(cpcmd, "-P");
-        WRITE_BUFFER(cpcmd, "-R");
-        cpLaPos = cpcmd.bufused;
-        for (i = laPos; opt->cmd[i]; i++)
-            WRITE_BUFFER(cpcmd, opt->cmd[i]);
-        WRITE_BUFFER(cpcmd, NULL);
-
-        /* open the file */
-        f = fopen(laFile, "r");
-        if (f) {
-            char *lbuf;
-            size_t lbufsz, lbufused;
-            lbufsz = 32;
-            ORL(lbuf, malloc, NULL, (lbufsz));
-
-            while (fgets(lbuf, lbufsz, f)) {
-                lbufused = strlen(lbuf);
-
-                /* read in the remainder of the line */
-                while (lbuf[lbufused-1] != '\n') {
-                    lbufsz *= 2;
-                    ORL(lbuf, realloc, NULL, (lbuf, lbufsz));
-                    if (!fgets(lbuf + lbufused, lbufsz - lbufused, f)) break;
-                    lbufused = strlen(lbuf);
-                }
-
-                /* is this a library_names or old_library line? */
-                if (!strncmp(lbuf, "library_names='", 15) ||
-                    !strncmp(lbuf, "old_library='", 13)) {
-                    char *part, *saveptr;
-                    char *dlibs = lbuf + 13 + (lbuf[0] == 'l' ? 2 : 0);
-                    char *end = strrchr(dlibs, '\'');
-                    if (end) *end = '\0';
-
-                    /* now go one by one through the libs */
-                    part = strtok_r(dlibs, " ", &saveptr);
-                    while (part) {
-                        /* and install it */
-                        char *fullName;
-                        ORL(fullName, malloc, NULL, (strlen(dir) + strlen(part) + 8));
-                        sprintf(fullName, "%s/.libs/%s", dir, part);
-                        cpcmd.buf[cpLaPos] = fullName;
-                        spawn(opt, cpcmd.buf);
-                        free(fullName);
-
-                        part = strtok_r(NULL, " ", &saveptr);
-                    }
-                }
+            /* check if there's a .libs version */
+            ORL(libsF, malloc, NULL, (strlen(dir) + strlen(base) + 8));
+            sprintf(libsF, "%s/.libs/%s", dir, base);
+            if (access(libsF, F_OK) == 0) {
+                /* use that one */
+                WRITE_BUFFER(installCmd, libsF);
+                WRITE_BUFFER(tofree, libsF);
+            } else {
+                /* use the provided argument */
+                WRITE_BUFFER(installCmd, opt->cmd[i]);
+                free(libsF);
             }
 
-            free(lbuf);
-            fclose(f);
+        } else {
+            /* install all the files specified in the .la */
+            FILE *f;
+            size_t cpLaPos;
+
+            /* open the file */
+            f = fopen(laFile, "r");
+            if (f) {
+                char *lbuf;
+                size_t lbufsz, lbufused;
+                lbufsz = 32;
+                ORL(lbuf, malloc, NULL, (lbufsz));
+
+                while (fgets(lbuf, lbufsz, f)) {
+                    lbufused = strlen(lbuf);
+
+                    /* read in the remainder of the line */
+                    while (lbuf[lbufused-1] != '\n') {
+                        lbufsz *= 2;
+                        ORL(lbuf, realloc, NULL, (lbuf, lbufsz));
+                        if (!fgets(lbuf + lbufused, lbufsz - lbufused, f)) break;
+                        lbufused = strlen(lbuf);
+                    }
+
+                    /* is this a library_names or old_library line? */
+                    if (!strncmp(lbuf, "library_names='", 15) ||
+                            !strncmp(lbuf, "old_library='", 13)) {
+                        char *part, *saveptr;
+                        char *dlibs = lbuf + 13 + (lbuf[0] == 'l' ? 2 : 0);
+                        char *end = strrchr(dlibs, '\'');
+                        if (end) *end = '\0';
+
+                        /* now go one by one through the libs */
+                        part = strtok_r(dlibs, " ", &saveptr);
+                        while (part) {
+                            /* and install it */
+                            char *fullName;
+                            ORL(fullName, malloc, NULL, (strlen(dir) + strlen(part) + 8));
+                            sprintf(fullName, "%s/.libs/%s", dir, part);
+
+                            haveCp = 1;
+                            WRITE_BUFFER(cpCmd, fullName);
+                            WRITE_BUFFER(tofree, fullName);
+
+                            part = strtok_r(NULL, " ", &saveptr);
+                        }
+                    }
+                }
+
+                free(lbuf);
+                fclose(f);
+            }
+
         }
 
-        FREE_BUFFER(cpcmd);
+        free(baseC);
+        free(dirC);
 
     }
 
-    free(baseC);
-    free(dirC);
+    /* now run the commands */
+    if (haveInst) {
+        WRITE_BUFFER(installCmd, target);
+        WRITE_BUFFER(installCmd, NULL);
+        spawn(opt, installCmd.buf);
+    }
+    if (haveCp) {
+        WRITE_BUFFER(cpCmd, target);
+        WRITE_BUFFER(cpCmd, NULL);
+        spawn(opt, cpCmd.buf);
+    }
+
+    /* and free everything */
+    for (i = 0; i < tofree.bufused; i++) free(tofree.buf[i]);
+    FREE_BUFFER(tofree);
+    FREE_BUFFER(cpCmd);
+    FREE_BUFFER(installCmd);
 }
 
 #endif /* _POSIX_VERSION */

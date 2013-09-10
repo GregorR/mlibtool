@@ -59,3 +59,15 @@ There are three main use cases of mlibtool:
     if cc $srcdir/mlibtool.c -o mlibtool; then
         LIBTOOL="$ac_pwd/mlibtool $LIBTOOL"
     fi
+
+
+================================================================
+= BUGS                                                         =
+================================================================
+
+mlibtool strives to be 100% compatible with GNU libtool, but isn't there yet.
+The most egregious currently-known bug is that projects /built/ with mlibtool
+must be /installed/ with mlibtool, not GNU libtool, due to some as-yet unknown
+incompatibility between the generated .la files and wrapper scripts. Note that
+projects built partially or entirely with GNU libtool may be installed with
+mlibtool.
