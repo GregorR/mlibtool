@@ -60,6 +60,34 @@ int main(int argc, char **argv)
              "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
              "__GNU__" /* GNU Hurd */
 
+/* a simple buffer type for our persistent char ** commands */
+struct Buffer {
+    char **buf;
+    size_t bufused, bufsz;
+};
+
+#define BUFFER_DEFAULT_SZ 8
+
+#define INIT_BUFFER(ubuf) do { \
+    struct Buffer *buf_ = &(ubuf); \
+    SF(buf_->buf, malloc, NULL, (BUFFER_DEFAULT_SZ * sizeof(char *))); \
+    buf_->bufused = 0; \
+    buf_->bufsz = BUFFER_DEFAULT_SZ; \
+} while (0)
+
+#define WRITE_BUFFER(ubuf, val) do { \
+    struct Buffer *buf_ = &(ubuf); \
+    while (buf_->bufused >= buf_->bufsz) { \
+        buf_->bufsz *= 2; \
+        SF(buf_->buf, realloc, NULL, (buf_->buf, buf_->bufsz * sizeof(char *))); \
+    } \
+    buf_->buf[buf_->bufused++] = (val); \
+} while (0)
+
+#define FREE_BUFFER(ubuf) do { \
+    free((ubuf).buf); \
+} while (0)
+
 /* Is this system sane? */
 static int systemIsSane(char *cc)
 {
@@ -133,8 +161,7 @@ static int systemIsSane(char *cc)
 enum Mode {
     MODE_UNKNOWN = 0,
     MODE_COMPILE,
-    MODE_LINK,
-    MODE_INSTALL
+    MODE_LINK
 };
 
 
@@ -151,10 +178,13 @@ static void execLibtool(struct Options *opt)
     exit(1);
 }
 
-/* generic function to spawn a child and wait for it, failing if the child fails */
-static void spawn(struct Options *opt, char *const *cmd)
+/* Generic function to spawn a child and wait for it. If the child fails and
+ * retryIfFail is set, then execLibtool will be called. If the child fails and
+ * retryIfFail is unset, then exit(1). */
+static void spawn(struct Options *opt, char *const *cmd, int retryIfFail)
 {
     size_t i;
+    int fail = 0;
 
     /* output the command */
     if (!opt->quiet) {
@@ -176,10 +206,17 @@ static void spawn(struct Options *opt, char *const *cmd)
         }
         if (waitpid(pid, &tmpi, 0) != pid) {
             perror(cmd[0]);
+            fail = 1;
+        } else if (tmpi != 0)
+            fail = 1;
+    }
+
+    if (fail) {
+        if (retryIfFail) {
+            execLibtool(opt);
+        } else {
             exit(1);
         }
-        if (tmpi != 0)
-            exit(1);
     }
 }
 
@@ -340,8 +377,8 @@ static void usage()
 
 static void ltcompile(struct Options *opt)
 {
-    char **outCmd;
-    size_t oci, i;
+    struct Buffer outCmd;
+    size_t i;
     char *ext;
     FILE *f;
 
@@ -362,12 +399,10 @@ static void ltcompile(struct Options *opt)
          *nonPicFile = NULL;
 
     /* allocate the output command */
-    /* + 5: -fPIC -DPIC -o <name> \0 */
-    SF(outCmd, calloc, NULL, (opt->argc + 5, sizeof(char *)));
+    INIT_BUFFER(outCmd);
 
     /* and copy it in */
-    outCmd[0] = opt->cmd[0];
-    oci = 1;
+    WRITE_BUFFER(outCmd, opt->cmd[0]);
     for (i = 1; opt->cmd[i]; i++) {
         char *arg = opt->cmd[i];
         char *narg = opt->cmd[i+1];
@@ -375,10 +410,10 @@ static void ltcompile(struct Options *opt)
         if (arg[0] == '-') {
             if (!strcmp(arg, "-o") && narg) {
                 /* output name */
-                outCmd[oci++] = arg;
+                WRITE_BUFFER(outCmd, arg);
                 SF(outName, strdup, NULL, (narg));
-                outNamePos = oci;
-                outCmd[oci++] = narg;
+                outNamePos = outCmd.bufused;
+                WRITE_BUFFER(outCmd, narg);
                 i++;
 
             } else if (!strcmp(arg, "-prefer-pic") ||
@@ -390,19 +425,19 @@ static void ltcompile(struct Options *opt)
                 preferNonPic = 1;
 
             } else if (!strncmp(arg, "-Wc,", 4)) {
-                outCmd[oci++] = arg + 4;
+                WRITE_BUFFER(outCmd, arg + 4);
 
             } else if (!strcmp(arg, "-no-suppress")) {
                 /* ignored for compatibility */
 
             } else {
-                outCmd[oci++] = arg;
+                WRITE_BUFFER(outCmd, arg);
 
             }
 
         } else {
             inName = arg;
-            outCmd[oci++] = arg;
+            WRITE_BUFFER(outCmd, arg);
 
         }
     }
@@ -435,9 +470,9 @@ static void ltcompile(struct Options *opt)
         }
 
         /* and add it to the command */
-        outCmd[oci++] = "-o";
-        outNamePos = oci;
-        outCmd[oci++] = outName;
+        WRITE_BUFFER(outCmd, "-o");
+        outNamePos = outCmd.bufused;
+        WRITE_BUFFER(outCmd, outName);
 
     } else {
         /* make sure the output name includes .lo */
@@ -475,8 +510,10 @@ static void ltcompile(struct Options *opt)
 
     /* now do the actual building */
     if (buildNonPic) {
-        outCmd[outNamePos] = nonPicFile;
-        spawn(opt, outCmd);
+        outCmd.buf[outNamePos] = nonPicFile;
+        WRITE_BUFFER(outCmd, NULL);
+        spawn(opt, outCmd.buf, 0);
+        outCmd.bufused--;
 
         if (!buildPic && !opt->dryRun)
             link(nonPicFile, picFile);
@@ -484,10 +521,13 @@ static void ltcompile(struct Options *opt)
     }
 
     if (buildPic) {
-        outCmd[oci++] = "-fPIC";
-        outCmd[oci++] = "-DPIC";
-        outCmd[outNamePos] = picFile;
-        spawn(opt, outCmd);
+        WRITE_BUFFER(outCmd, "-fPIC");
+        WRITE_BUFFER(outCmd, "-DPIC");
+        outCmd.buf[outNamePos] = picFile;
+
+        WRITE_BUFFER(outCmd, NULL);
+        spawn(opt, outCmd.buf, 0);
+        outCmd.bufused--;
 
         if (!buildNonPic && !opt->dryRun)
             link(picFile, nonPicFile);
@@ -512,13 +552,14 @@ static void ltcompile(struct Options *opt)
     free(outBaseC);
     free(outDirC);
     free(outName);
-    free(outCmd);
+
+    FREE_BUFFER(outCmd);
 }
 
 static void ltlink(struct Options *opt)
 {
-    char **outCmd, **outAr, **tofree;
-    size_t oci, oai, tfi, i;
+    struct Buffer outCmd, outAr, tofree;
+    size_t i;
     char *ext;
     int tmpi;
 
@@ -534,7 +575,8 @@ static void ltlink(struct Options *opt)
     /* option derivatives */
     int buildBinary = 0,
         buildSo = 0,
-        buildA = 0;
+        buildA = 0,
+        retryIfFail = 0;
     char *outDirC = NULL,
          *outDir = NULL,
          *libsDir = NULL,
@@ -567,48 +609,43 @@ static void ltlink(struct Options *opt)
         }
     }
 
-    /* *2 for -L duplication, +4 for -o <name> -L.libs -shared */
-    SF(outCmd, calloc, NULL, (opt->argc * 2 + 5, sizeof(char *)));
+    /* allocate our buffers */
+    INIT_BUFFER(outCmd);
+    INIT_BUFFER(outAr);
+    INIT_BUFFER(tofree);
 
-    /* +2 for rc <libname> */
-    SF(outAr, calloc, NULL, (opt->argc + 3, sizeof(char *)));
-
-    SF(tofree, calloc, NULL, (opt->argc * 2, sizeof(char *)));
-
-    outCmd[0] = opt->cmd[0];
-    outCmd[1] = "-L.libs";
-    outAr[0] = "ar";
-    outAr[1] = "rc";
+    WRITE_BUFFER(outCmd, opt->cmd[0]);
+    WRITE_BUFFER(outCmd, "-L.libs");
+    WRITE_BUFFER(outAr, "ar");
+    WRITE_BUFFER(outAr, "rc");
+    WRITE_BUFFER(outAr, "a.a"); /* to be replaced */
 
     /* read in the command */
-    oci = 2;
-    oai = 3;
-    tfi = 0;
     for (i = 1; opt->cmd[i]; i++) {
         char *arg = opt->cmd[i];
         char *narg = opt->cmd[i+1];
 
         if (arg[0] == '-') {
             if (!strcmp(arg, "-all-static")) {
-                outCmd[oci++] = "-static";
+                WRITE_BUFFER(outCmd, "-static");
 
             } else if (!strcmp(arg, "-export-dynamic")) {
-                outCmd[oci++] = "-rdynamic";
+                WRITE_BUFFER(outCmd, "-rdynamic");
 
             } else if (!strncmp(arg, "-L", 2)) {
                 char *llibs;
 
                 /* need both the -L path specified and .../.libs */
-                outCmd[oci++] = arg;
+                WRITE_BUFFER(outCmd, arg);
                 SF(llibs, malloc, NULL, (strlen(arg) + 7));
                 sprintf(llibs, "%s/.libs", arg);
-                outCmd[oci++] = llibs;
-                tofree[tfi++] = llibs;
+                WRITE_BUFFER(outCmd, llibs);
+                WRITE_BUFFER(tofree, llibs);
 
             } else if (!strcmp(arg, "-o") && narg) {
-                outCmd[oci++] = arg;
-                outNamePos = oci;
-                outCmd[oci++] = narg;
+                WRITE_BUFFER(outCmd, arg);
+                outNamePos = outCmd.bufused;
+                WRITE_BUFFER(outCmd, narg);
                 i++;
 
             } else if (!strcmp(arg, "-rpath") && narg) {
@@ -628,12 +665,12 @@ static void ltlink(struct Options *opt)
                 i++;
 
             } else if (!strncmp(arg, "-Wc,", 4)) {
-                outCmd[oci++] = arg + 4;
+                WRITE_BUFFER(outCmd, arg + 4);
 
             } else if (narg &&
                        (!strcmp(arg, "-Xcompiler") ||
                         !strcmp(arg, "-XCClinker"))) {
-                outCmd[oci++] = narg;
+                WRITE_BUFFER(outCmd, narg);
                 i++;
 
             } else if (!strcmp(arg, "-dlopen") ||
@@ -663,7 +700,7 @@ static void ltlink(struct Options *opt)
                 /* ignored for compatibility */
 
             } else {
-                outCmd[oci++] = arg;
+                WRITE_BUFFER(outCmd, arg);
 
             }
 
@@ -685,9 +722,9 @@ static void ltlink(struct Options *opt)
                 /* make the .libs/.o version */
                 SF(loFull, malloc, NULL, (strlen(loDir) + strlen(loBase) + 13));
                 sprintf(loFull, "%s/.libs/%s.s%c.o", loDir, loBase, (buildBinary ? 't' : 'h'));
-                outAr[oai++] = loFull;
-                outCmd[oci++] = loFull;
-                tofree[tfi++] = loFull;
+                WRITE_BUFFER(outAr, loFull);
+                WRITE_BUFFER(outCmd, loFull);
+                WRITE_BUFFER(tofree, loFull);
 
                 free(loBaseC);
                 free(loDirC);
@@ -695,6 +732,7 @@ static void ltlink(struct Options *opt)
             } else if (ext && !strcmp(ext, ".la")) {
                 /* link to this library */
                 char *laDirC, *laDir, *laBaseC, *laBase, *aarg;
+                int wholeArchive = 0;
 
                 /* OK, it's a .la file, figure out the .libs name */
                 SF(laDirC, strdup, NULL, (arg));
@@ -705,26 +743,40 @@ static void ltlink(struct Options *opt)
                 /* get the -l name */
                 ext = strrchr(laBase, '.');
                 if (ext) *ext = '\0';
-                if (!strncmp(laBase, "lib", 3)) laBase += 3;
 
                 /* add -L for the .libs path */
                 SF(aarg, malloc, NULL, (strlen(laDir) + 9));
                 sprintf(aarg, "-L%s/.libs", laDir);
-                outCmd[oci++] = aarg;
-                tofree[tfi++] = aarg;
+                WRITE_BUFFER(outCmd, aarg);
+                WRITE_BUFFER(tofree, aarg);
+
+                /* if there is no .so file, we need -Wl,--whole-archive */
+                SF(aarg, malloc, NULL, (strlen(laDir) + strlen(laBase) + 11));
+                sprintf(aarg, "%s/.libs/%s.so", laDir, laBase);
+                if (access(aarg, F_OK) != 0) {
+                    /* .a only */
+                    wholeArchive = retryIfFail = 1;
+                    WRITE_BUFFER(outCmd, "-Wl,--whole-archive");
+                }
+                free(aarg);
 
                 /* and add -l<lib name> */
+                if (!strncmp(laBase, "lib", 3)) laBase += 3;
                 SF(aarg, malloc, NULL, (strlen(laBase) + 3));
                 sprintf(aarg, "-l%s", laBase);
-                outCmd[oci++] = aarg;
-                tofree[tfi++] = aarg;
+                WRITE_BUFFER(outCmd, aarg);
+                WRITE_BUFFER(tofree, aarg);
+
+                if (wholeArchive) {
+                    WRITE_BUFFER(outCmd, "-Wl,--no-whole-archive");
+                }
 
                 free(laBaseC);
                 free(laDirC);
 
             } else {
-                outAr[oai++] = arg;
-                outCmd[oci++] = arg;
+                WRITE_BUFFER(outAr, arg);
+                WRITE_BUFFER(outCmd, arg);
 
             }
 
@@ -739,9 +791,9 @@ static void ltlink(struct Options *opt)
     /* make sure an output name was specified */
     if (!outName) {
         outName = "a.out";
-        outCmd[oci++] = "-o";
-        outNamePos = oci;
-        outCmd[oci++] = outName;
+        WRITE_BUFFER(outCmd, "-o");
+        outNamePos = outCmd.bufused;
+        WRITE_BUFFER(outCmd, outName);
     }
 
     /* should we build a .so? */
@@ -762,23 +814,28 @@ static void ltlink(struct Options *opt)
     if (!opt->dryRun) mkdir(libsDir, 0777); /* ignore errors */
 
     /* building a binary is super-simple */
-    if (buildBinary)
-        spawn(opt, outCmd);
+    if (buildBinary) {
+        WRITE_BUFFER(outCmd, NULL);
+        spawn(opt, outCmd.buf, retryIfFail);
+        outCmd.bufused--;
+    }
 
     /* building a .a library is mostly simple */
     if (buildA) {
         char *afile;
         SF(afile, malloc, NULL, (strlen(outDir) + strlen(outBase) + 10));
         sprintf(afile, "%s/.libs/%s.a", outDir, outBase);
-        outAr[2] = afile;
+        outAr.buf[2] = afile;
 
         /* run ar */
-        spawn(opt, outAr);
+        WRITE_BUFFER(outAr, NULL);
+        spawn(opt, outAr.buf, retryIfFail);
+        outAr.bufused--;
 
         /* and make sure to ranlib too! */
-        outAr[1] = "ranlib";
-        outAr[3] = NULL;
-        spawn(opt, outAr + 1);
+        outAr.buf[1] = "ranlib";
+        outAr.buf[3] = NULL;
+        spawn(opt, outAr.buf + 1, retryIfFail);
 
         free(afile);
     }
@@ -817,11 +874,13 @@ static void ltlink(struct Options *opt)
         unlink(linkpath);
 
         /* set up the link command */
-        outCmd[oci++] = "-shared";
-        outCmd[outNamePos] = sopath;
+        WRITE_BUFFER(outCmd, "-shared");
+        outCmd.buf[outNamePos] = sopath;
 
         /* link */
-        spawn(opt, outCmd);
+        WRITE_BUFFER(outCmd, NULL);
+        spawn(opt, outCmd.buf, retryIfFail);
+        outCmd.bufused--;
 
         /* move it to the proper name */
         if ((tmpi = rename(sopath, longpath)) < 0) {
@@ -874,10 +933,12 @@ static void ltlink(struct Options *opt)
     free(libsDir);
     free(outBaseC);
     free(outDirC);
-    for (i = 0; tofree[i]; i++) free(tofree[i]);
-    free(tofree);
-    free(outAr);
-    free(outCmd);
+
+    for (i = 0; i < tofree.bufused; i++) free(tofree.buf[i]);
+
+    FREE_BUFFER(tofree);
+    FREE_BUFFER(outAr);
+    FREE_BUFFER(outCmd);
 }
 
 #endif /* _POSIX_VERSION */
