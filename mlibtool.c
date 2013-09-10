@@ -275,7 +275,7 @@ static int checkLoSanity(struct Options *opt, char *cc)
 }
 
 
-static void usage();
+static void usage(enum Mode mode);
 
 /* mode functions */
 static void ltcompile(struct Options *);
@@ -296,7 +296,8 @@ int main(int argc, char **argv)
 
     /* first argument must be target libtool */
     if (argc < 2 || argv[1][0] == '-') {
-        usage();
+        usage(MODE_UNKNOWN);
+        exit(1);
     }
     for (argi = 1; argi < argc && argv[argi][0] != '-'; argi++);
 
@@ -320,7 +321,7 @@ int main(int argc, char **argv)
             exit(0);
 
         } else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
-            usage();
+            usage(MODE_UNKNOWN);
             exit(0);
 
         } else if (!strncmp(arg, "--mode=", 7) && argi < argc - 1) {
@@ -344,7 +345,7 @@ int main(int argc, char **argv)
     opt.cmd = argv + argi;
 
     if (!modeS) {
-        usage();
+        usage(MODE_UNKNOWN);
         exit(1);
     }
 
@@ -355,6 +356,14 @@ int main(int argc, char **argv)
         mode = MODE_LINK;
     } else if (!strcmp(modeS, "install")) {
         mode = MODE_INSTALL;
+    }
+
+    /* if they're asking for mode help, give it to them */
+    if (argi < argc) {
+        if (!strcmp(argv[argi], "--help") || !strcmp(argv[argi], "-h")) {
+            usage(mode);
+            exit(0);
+        }
     }
 
     /* next argument is the compiler, use that to check for sanity */
@@ -390,7 +399,7 @@ int main(int argc, char **argv)
     return 0;
 }
 
-static void usage()
+static void usage(enum Mode mode)
 {
     printf("Use: mlibtool <target-libtool> [options] --mode=<mode> <command>\n"
         "Options:\n"
@@ -403,6 +412,48 @@ static void usage()
         "\tinstall: install libraries or executables\n"
         "\tlink: create a library or an executable\n"
         "\n");
+
+    if (mode != MODE_UNKNOWN)
+        printf("Recognized mode options:\n");
+
+    if (mode == MODE_COMPILE) {
+        printf("\t-o <name>: set the output file name to <name>\n"
+               "\t-prefer-pic|-shared: build only a PIC file\n"
+               "\t-prefer-non-pic|-static: build only a non-PIC file\n"
+               "\t-Wc,<flag>: pass flag directly to cc\n"
+               "\n");
+
+    } else if (mode == MODE_LINK) {
+        printf("\t-o <name>: set the output file name to <name>\n"
+               "\t-all-static: create a static binary/library\n"
+               "\t-avoid-version: avoid adding version info to library names\n"
+               "\t-export-dynamic: cc -rdynamic\n"
+               "\t-L<dir>: search both <dir> and <dir>/.libs\n"
+               "\t-module: build a module suitable for dlopen\n"
+               "\t-rpath <dir>: build a shared library to be installed to <dir>\n"
+               "\t              (note: this flag is REQUIRED to build a shared\n"
+               "\t               library, but does NOT set an RPATH in the\n"
+               "\t               resultant library)\n");
+        printf("\t-version-info <current>:<rev>:<age>: set version info\n"
+               "\t-Wc,<flag>|-Xcompiler <flag>|-XCClinker <flag>: pass <flag>\n"
+               "\t                                                to cc\n"
+               "\n");
+
+        printf("Mode options ignored for GNU libtool compatibility:\n"
+               "\t-bindir <dir>\n"
+               "\n");
+
+        printf("Unsupported mode options:\n"
+               "\t-dlopen, -dlpreopen, -export-symbols, -export-symbols-regex,\n"
+               "\t-objectlist, -precious-files-regex, -release, -shared,\n"
+               "\t-shrext, -static, -static-libtool-libs, -weak\n"
+               "\n");
+
+    } else if (mode == MODE_INSTALL) {
+        printf("\t(none)\n\n");
+
+    }
+
     printf("mlibtool is a mini version of libtool for sensible systems. If you're\n"
         "compiling for Linux or BSD with supported invocation commands,\n"
         "<target-libtool> will never be called.\n"
