@@ -62,12 +62,17 @@ There are three main use cases of mlibtool:
 
 
 ================================================================
-= BUGS                                                         =
+= BUGS AND INCOMPATIBILITIES                                   =
 ================================================================
 
-mlibtool strives to be 100% compatible with GNU libtool, but isn't there yet.
-The most egregious currently-known bug is that projects /built/ with mlibtool
-must be /installed/ with mlibtool, not GNU libtool, due to some as-yet unknown
-incompatibility between the generated .la files and wrapper scripts. Note that
-projects built partially or entirely with GNU libtool may be installed with
-mlibtool.
+mlibtool strives to be compatible with all useful features of GNU libtool, but
+isn't there yet.  The most egregious currently-known bug is that projects
+/built/ with mlibtool must be /installed/ with mlibtool, not GNU libtool, due
+to some as-yet unknown incompatibility between the generated .la files and
+wrapper scripts. Note that projects built partially or entirely with GNU
+libtool may be installed with mlibtool.
+
+An intentional difference between GNU libtool and mlibtool is the installation
+of .la library wrappers. GNU libtool typically installs them, but they're
+rarely useful; pkg-config has subsumed their role. As such, mlibtool only
+installs the actual .so and .a files, not the .la wrapper.

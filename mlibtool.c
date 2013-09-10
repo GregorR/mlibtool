@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.1"
+#define MLIBTOOL_VERSION "0.2"
 
 /*
  * Copyright (c) 2013 Gregor Richards
