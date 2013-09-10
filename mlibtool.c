@@ -166,22 +166,24 @@ enum Mode {
 
 
 struct Options {
-    int dryRun, quiet, argc;
+    int dryRun, quiet, retryIfFail;
+    int argc;
     char **argv, **cmd;
 };
 
 /* redirect to libtool */
 static void execLibtool(struct Options *opt)
 {
+    if (!opt->quiet)
+        fprintf(stderr, "mlibtool: unsupported configuration, trying libtool (%s)\n", opt->argv[1]);
     execvp(opt->argv[1], opt->argv + 1);
     perror(opt->argv[1]);
     exit(1);
 }
 
-/* Generic function to spawn a child and wait for it. If the child fails and
- * retryIfFail is set, then execLibtool will be called. If the child fails and
- * retryIfFail is unset, then exit(1). */
-static void spawn(struct Options *opt, char *const *cmd, int retryIfFail)
+/* Generic function to spawn a child and wait for it, exiting if the child
+ * fails. */
+static void spawn(struct Options *opt, char *const *cmd)
 {
     size_t i;
     int fail = 0;
@@ -212,7 +214,7 @@ static void spawn(struct Options *opt, char *const *cmd, int retryIfFail)
     }
 
     if (fail) {
-        if (retryIfFail) {
+        if (opt->retryIfFail) {
             execLibtool(opt);
         } else {
             exit(1);
@@ -512,7 +514,7 @@ static void ltcompile(struct Options *opt)
     if (buildNonPic) {
         outCmd.buf[outNamePos] = nonPicFile;
         WRITE_BUFFER(outCmd, NULL);
-        spawn(opt, outCmd.buf, 0);
+        spawn(opt, outCmd.buf);
         outCmd.bufused--;
 
         if (!buildPic && !opt->dryRun)
@@ -526,7 +528,7 @@ static void ltcompile(struct Options *opt)
         outCmd.buf[outNamePos] = picFile;
 
         WRITE_BUFFER(outCmd, NULL);
-        spawn(opt, outCmd.buf, 0);
+        spawn(opt, outCmd.buf);
         outCmd.bufused--;
 
         if (!buildNonPic && !opt->dryRun)
@@ -556,9 +558,134 @@ static void ltcompile(struct Options *opt)
     FREE_BUFFER(outCmd);
 }
 
+/* the most complicated part of linking is linking in .la files */
+static void linkLaFile(struct Options *opt,
+                       int buildLib,
+                       struct Buffer *outCmd,
+                       struct Buffer *dependencyLibs,
+                       struct Buffer *tofree,
+                       char *arg)
+{
+    /* link to this library */
+    char *laDirC, *laDir, *laBaseC, *laBase, *aarg, *ext;
+    int wholeArchive = 0;
+    FILE *f;
+
+    /* OK, it's a .la file, figure out the .libs name */
+    SF(laDirC, strdup, NULL, (arg));
+    laDir = dirname(laDirC);
+    SF(laBaseC, strdup, NULL, (arg));
+    laBase = basename(laBaseC);
+
+    /* get the -l name */
+    ext = strrchr(laBase, '.');
+    if (ext) *ext = '\0';
+
+    /* add -L for the .libs path */
+    SF(aarg, malloc, NULL, (strlen(laDir) + 9));
+    sprintf(aarg, "-L%s/.libs", laDir);
+    WRITE_BUFFER(*outCmd, aarg);
+    WRITE_BUFFER(*tofree, aarg);
+
+    /* if there's only a .a, libtool specifies we bring in the whole archive */
+    if (buildLib) {
+        SF(aarg, malloc, NULL, (strlen(laDir) + strlen(laBase) + 11));
+        sprintf(aarg, "%s/.libs/%s.so", laDir, laBase);
+        if (access(aarg, F_OK) != 0)
+            wholeArchive = 1;
+        free(aarg);
+    }
+    if (wholeArchive) {
+        /* this is GNU-ld-specific, so retry if it doesn't work */
+        opt->retryIfFail = 1;
+        WRITE_BUFFER(*outCmd, "-Wl,--whole-archive");
+
+    } else {
+        /* if we're not linking in the whole archive, then this becomes a
+         * dependency */
+        if (dependencyLibs) {
+            char *realla;
+            if ((realla = realpath(arg, NULL))) {
+                WRITE_BUFFER(*dependencyLibs, realla);
+                WRITE_BUFFER(*tofree, realla);
+            } else {
+                WRITE_BUFFER(*dependencyLibs, arg);
+            }
+        }
+
+    }
+
+    /* and add -l<lib name> */
+    if (!strncmp(laBase, "lib", 3)) laBase += 3;
+    SF(aarg, malloc, NULL, (strlen(laBase) + 3));
+    sprintf(aarg, "-l%s", laBase);
+    WRITE_BUFFER(*outCmd, aarg);
+    WRITE_BUFFER(*tofree, aarg);
+
+    if (wholeArchive) {
+        WRITE_BUFFER(*outCmd, "-Wl,--no-whole-archive");
+    }
+
+    free(laBaseC);
+    free(laDirC);
+
+    /* then add any dependencies */
+    f = fopen(arg, "r");
+    if (f) {
+        char *lbuf;
+        size_t lbufsz, lbufused;
+        lbufsz = 32;
+        SF(lbuf, malloc, NULL, (lbufsz));
+
+        while (fgets(lbuf, lbufsz, f)) {
+            lbufused = strlen(lbuf);
+
+            /* read in the remainder of the line */
+            while (lbuf[lbufused-1] != '\n') {
+                lbufsz *= 2;
+                SF(lbuf, realloc, NULL, (lbuf, lbufsz));
+                if (!fgets(lbuf + lbufused, lbufsz - lbufused, f)) break;
+                lbufused = strlen(lbuf);
+            }
+
+            /* is this a dependency_libs line? */
+            if (!strncmp(lbuf, "dependency_libs='", 17)) {
+                char *part, *saveptr;
+                char *dlibs = lbuf + 17;
+                char *end = strrchr(dlibs, '\'');
+                if (end) *end = '\0';
+
+                /* now go one by one through the libs */
+                part = strtok_r(dlibs, " ", &saveptr);
+                while (part) {
+                    /* if this is a .la file, need to recurse */
+                    char *ext = strrchr(part, '.');
+                    if (ext && !strcmp(ext, ".la")) {
+                        linkLaFile(opt, buildLib, outCmd, NULL, tofree, part);
+
+                    } else {
+                        /* otherwise, just add it */
+                        char *pdup;
+                        SF(pdup, strdup, NULL, (part));
+                        WRITE_BUFFER(*outCmd, pdup);
+                        WRITE_BUFFER(*tofree, pdup);
+
+                    }
+
+                    part = strtok_r(NULL, " ", &saveptr);
+                }
+            }
+        }
+
+        free(lbuf);
+        fclose(f);
+    }
+
+}
+
 static void ltlink(struct Options *opt)
 {
-    struct Buffer outCmd, outAr, tofree;
+    struct Buffer outCmd, outAr, dependencyLibs, tofree;
     size_t i;
     char *ext;
     int tmpi;
@@ -567,6 +694,8 @@ static void ltlink(struct Options *opt)
     int major = 0,
         minor = 0,
         revision = 0,
+        module = 0,
+        avoidVersion = 0,
         insane = 0;
     char *outName = NULL,
          *rpath = NULL;
@@ -574,14 +703,15 @@ static void ltlink(struct Options *opt)
 
     /* option derivatives */
     int buildBinary = 0,
+        buildLib = 0,
         buildSo = 0,
-        buildA = 0,
-        retryIfFail = 0;
+        buildA = 0;
     char *outDirC = NULL,
          *outDir = NULL,
          *libsDir = NULL,
          *outBaseC = NULL,
          *outBase = NULL,
+         *afile = NULL,
          *soname = NULL,
          *longname = NULL,
          *linkname = NULL;
@@ -600,7 +730,7 @@ static void ltlink(struct Options *opt)
         ext = strrchr(outName, '.');
         if (ext && !strcmp(ext, ".la")) {
             /* it's a libtool library */
-            buildA = 1;
+            buildLib = buildA = 1;
 
         } else {
             /* it's a binary */
@@ -612,6 +742,7 @@ static void ltlink(struct Options *opt)
     /* allocate our buffers */
     INIT_BUFFER(outCmd);
     INIT_BUFFER(outAr);
+    INIT_BUFFER(dependencyLibs);
     INIT_BUFFER(tofree);
 
     WRITE_BUFFER(outCmd, opt->cmd[0]);
@@ -629,6 +760,9 @@ static void ltlink(struct Options *opt)
             if (!strcmp(arg, "-all-static")) {
                 WRITE_BUFFER(outCmd, "-static");
 
+            } else if (!strcmp(arg, "-avoid-version")) {
+                avoidVersion = 1;
+
             } else if (!strcmp(arg, "-export-dynamic")) {
                 WRITE_BUFFER(outCmd, "-rdynamic");
 
@@ -637,10 +771,21 @@ static void ltlink(struct Options *opt)
 
                 /* need both the -L path specified and .../.libs */
                 WRITE_BUFFER(outCmd, arg);
+                WRITE_BUFFER(dependencyLibs, arg);
+
                 SF(llibs, malloc, NULL, (strlen(arg) + 7));
                 sprintf(llibs, "%s/.libs", arg);
+
                 WRITE_BUFFER(outCmd, llibs);
+                WRITE_BUFFER(dependencyLibs, llibs);
                 WRITE_BUFFER(tofree, llibs);
+
+            } else if (!strncmp(arg, "-l", 2)) {
+                WRITE_BUFFER(outCmd, arg);
+                WRITE_BUFFER(dependencyLibs, arg);
+
+            } else if (!strcmp(arg, "-module")) {
+                module = 1;
 
             } else if (!strcmp(arg, "-o") && narg) {
                 WRITE_BUFFER(outCmd, arg);
@@ -675,7 +820,8 @@ static void ltlink(struct Options *opt)
 
             } else if (!strcmp(arg, "-dlopen") ||
                        !strcmp(arg, "-dlpreopen") ||
-                       !strcmp(arg, "-module") ||
+                       !strcmp(arg, "-export-symbols") ||
+                       !strcmp(arg, "-export-symbols-regex") ||
                        !strcmp(arg, "-objectlist") ||
                        !strcmp(arg, "-precious-files-regex") ||
                        !strcmp(arg, "-release") ||
@@ -687,10 +833,7 @@ static void ltlink(struct Options *opt)
                 /* unsupported */
                 insane = 1;
 
-            } else if (narg &&
-                       (!strcmp(arg, "-bindir") ||
-                        !strcmp(arg, "-export-symbols") ||
-                        !strcmp(arg, "-export-symbols-regex"))) {
+            } else if (!strcmp(arg, "-bindir") && narg) {
                 /* ignored for compatibility */
                 i++;
 
@@ -730,49 +873,7 @@ static void ltlink(struct Options *opt)
                 free(loDirC);
 
             } else if (ext && !strcmp(ext, ".la")) {
-                /* link to this library */
-                char *laDirC, *laDir, *laBaseC, *laBase, *aarg;
-                int wholeArchive = 0;
-
-                /* OK, it's a .la file, figure out the .libs name */
-                SF(laDirC, strdup, NULL, (arg));
-                laDir = dirname(laDirC);
-                SF(laBaseC, strdup, NULL, (arg));
-                laBase = basename(laBaseC);
-
-                /* get the -l name */
-                ext = strrchr(laBase, '.');
-                if (ext) *ext = '\0';
-
-                /* add -L for the .libs path */
-                SF(aarg, malloc, NULL, (strlen(laDir) + 9));
-                sprintf(aarg, "-L%s/.libs", laDir);
-                WRITE_BUFFER(outCmd, aarg);
-                WRITE_BUFFER(tofree, aarg);
-
-                /* if there is no .so file, we need -Wl,--whole-archive */
-                SF(aarg, malloc, NULL, (strlen(laDir) + strlen(laBase) + 11));
-                sprintf(aarg, "%s/.libs/%s.so", laDir, laBase);
-                if (access(aarg, F_OK) != 0) {
-                    /* .a only */
-                    wholeArchive = retryIfFail = 1;
-                    WRITE_BUFFER(outCmd, "-Wl,--whole-archive");
-                }
-                free(aarg);
-
-                /* and add -l<lib name> */
-                if (!strncmp(laBase, "lib", 3)) laBase += 3;
-                SF(aarg, malloc, NULL, (strlen(laBase) + 3));
-                sprintf(aarg, "-l%s", laBase);
-                WRITE_BUFFER(outCmd, aarg);
-                WRITE_BUFFER(tofree, aarg);
-
-                if (wholeArchive) {
-                    WRITE_BUFFER(outCmd, "-Wl,--no-whole-archive");
-                }
-
-                free(laBaseC);
-                free(laDirC);
+                linkLaFile(opt, buildLib, &outCmd, &dependencyLibs, &tofree, arg);
 
             } else {
                 WRITE_BUFFER(outAr, arg);
@@ -797,7 +898,7 @@ static void ltlink(struct Options *opt)
     }
 
     /* should we build a .so? */
-    if (buildA)
+    if (buildLib)
         if (rpath) buildSo = 1;
 
     /* get the directory names */
@@ -816,47 +917,61 @@ static void ltlink(struct Options *opt)
     /* building a binary is super-simple */
     if (buildBinary) {
         WRITE_BUFFER(outCmd, NULL);
-        spawn(opt, outCmd.buf, retryIfFail);
+        spawn(opt, outCmd.buf);
         outCmd.bufused--;
     }
 
     /* building a .a library is mostly simple */
     if (buildA) {
-        char *afile;
-        SF(afile, malloc, NULL, (strlen(outDir) + strlen(outBase) + 10));
-        sprintf(afile, "%s/.libs/%s.a", outDir, outBase);
-        outAr.buf[2] = afile;
+        char *apath;
+
+        SF(afile, malloc, NULL, (strlen(outBase) + 3));
+        sprintf(afile, "%s.a", outBase);
+
+        SF(apath, malloc, NULL, (strlen(outDir) + strlen(afile) + 8));
+        sprintf(apath, "%s/.libs/%s", outDir, afile);
+        outAr.buf[2] = apath;
 
         /* run ar */
         WRITE_BUFFER(outAr, NULL);
-        spawn(opt, outAr.buf, retryIfFail);
+        spawn(opt, outAr.buf);
         outAr.bufused--;
 
         /* and make sure to ranlib too! */
         outAr.buf[1] = "ranlib";
         outAr.buf[3] = NULL;
-        spawn(opt, outAr.buf + 1, retryIfFail);
+        spawn(opt, outAr.buf + 1);
 
-        free(afile);
+        free(apath);
     }
 
     /* and building a .so file is the most complicated */
     if (buildSo) {
-        char *sopath, *longpath, *linkpath;
+        char *sopath = NULL,
+             *longpath = NULL,
+             *linkpath = NULL;
 
-        /* we have three filenames:
-         * (1) the soname, .so.major
-         * (2) the long name, .so.major.minor.revision
-         * (3) the linker name, .software
-         *
-         * We compile with the soname as output to avoid needing -Wl,-soname.
-         */
-        SF(soname, malloc, NULL, (strlen(outBase) + 4*sizeof(int) + 5));
-        sprintf(soname, "%s.so.%d", outBase, major);
-        SF(longname, malloc, NULL, (strlen(outBase) + 3*4*sizeof(int) + 7));
-        sprintf(longname, "%s.so.%d.%d.%d", outBase, major, minor, revision);
-        SF(linkname, malloc, NULL, (strlen(outBase) + 4));
-        sprintf(linkname, "%s.so", outBase);
+        if (!avoidVersion) {
+            /* we have three filenames:
+             * (1) the soname, .so.major
+             * (2) the long name, .so.major.minor.revision
+             * (3) the linker name, .software
+             *
+             * We compile with the soname as output to avoid needing -Wl,-soname.
+             */
+            SF(soname, malloc, NULL, (strlen(outBase) + 4*sizeof(int) + 5));
+            sprintf(soname, "%s.so.%d", outBase, major);
+            SF(longname, malloc, NULL, (strlen(outBase) + 3*4*sizeof(int) + 7));
+            sprintf(longname, "%s.so.%d.%d.%d", outBase, major, minor, revision);
+            SF(linkname, malloc, NULL, (strlen(outBase) + 4));
+            sprintf(linkname, "%s.so", outBase);
+
+        } else {
+            /* just one soname: .so */
+            SF(soname, malloc, NULL, (strlen(outBase) + 4));
+            sprintf(soname, "%s.so", outBase);
+
+        }
 
         /* and get full paths for them all */
 #define FULLPATH(x) do { \
@@ -864,14 +979,18 @@ static void ltlink(struct Options *opt)
         sprintf(x ## path, "%s/.libs/%s", outDir, x ## name); \
 } while (0)
         FULLPATH(so);
-        FULLPATH(long);
-        FULLPATH(link);
+        if (!avoidVersion) {
+            FULLPATH(long);
+            FULLPATH(link);
+        }
 #undef FULLPATH
 
         /* unlink anything that already exists */
         unlink(sopath);
-        unlink(longpath);
-        unlink(linkpath);
+        if (longpath)
+            unlink(longpath);
+        if (linkpath)
+            unlink(linkpath);
 
         /* set up the link command */
         WRITE_BUFFER(outCmd, "-shared");
@@ -879,23 +998,25 @@ static void ltlink(struct Options *opt)
 
         /* link */
         WRITE_BUFFER(outCmd, NULL);
-        spawn(opt, outCmd.buf, retryIfFail);
+        spawn(opt, outCmd.buf);
         outCmd.bufused--;
 
-        /* move it to the proper name */
-        if ((tmpi = rename(sopath, longpath)) < 0) {
-            perror(longpath);
-            exit(1);
-        }
+        if (!avoidVersion) {
+            /* move it to the proper name */
+            if ((tmpi = rename(sopath, longpath)) < 0) {
+                perror(longpath);
+                exit(1);
+            }
 
-        /* link in the shorter names */
-        if ((tmpi = symlink(longname, sopath)) < 0) {
-            perror(sopath);
-            exit(1);
-        }
-        if ((tmpi = symlink(longname, linkpath)) < 0) {
-            perror(linkpath);
-            exit(1);
+            /* link in the shorter names */
+            if ((tmpi = symlink(longname, sopath)) < 0) {
+                perror(sopath);
+                exit(1);
+            }
+            if ((tmpi = symlink(longname, linkpath)) < 0) {
+                perror(linkpath);
+                exit(1);
+            }
         }
 
         free(sopath);
@@ -904,7 +1025,7 @@ static void ltlink(struct Options *opt)
     }
 
     /* finally, make the .la file */
-    if (buildA) {
+    if (buildLib) {
         FILE *f = fopen(outName, "w");
         if (!f) {
             perror(outName);
@@ -916,17 +1037,47 @@ static void ltlink(struct Options *opt)
 
         if (soname) {
             /* we have a .so */
-            fprintf(f, "dlname='%s'\n"
-                       "library_names='%s %s %s'\n",
-                       soname,
-                       longname, soname, linkname);
+            fprintf(f, "dlname='%s'\n", soname);
+
+            if (longname && linkname) {
+                /* and other names */
+                fprintf(f, "library_names='%s %s %s'\n",
+                        longname, soname, linkname);
+            } else {
+                fprintf(f, "library_names='%s'\n", soname);
+            }
+        } else {
+            fprintf(f, "dlname=''\nlibrary_names=''\n");
         }
 
-        /* FIXME */
+        fprintf(f, "old_library='%s'\n"
+                   "inherited_linker_flags=''\n", afile);
+
+        fprintf(f, "dependency_libs='");
+        for (i = 0; i < dependencyLibs.bufused; i++)
+            fprintf(f, " %s", dependencyLibs.buf[i]);
+        fprintf(f, "'\n");
+
+        /* version info */
+        fprintf(f, "current=%d\n"
+                   "age=%d\n"
+                   "revision=%d\n",
+                   (major + minor) /* current is weird */,
+                   minor,
+                   revision);
+
+        fprintf(f, "installed=no\n"
+                   "shouldnotlink=%s\n"
+                   "dlopen=''\n"
+                   "dlpreopen=''\n"
+                   "libdir='%s'\n",
+                   (module ? "yes" : "no"),
+                   (rpath ? rpath : ""));
 
         fclose(f);
     }
 
+    free(afile);
     free(soname);
     free(longname);
     free(linkname);
@@ -937,6 +1088,7 @@ static void ltlink(struct Options *opt)
     for (i = 0; i < tofree.bufused; i++) free(tofree.buf[i]);
 
     FREE_BUFFER(tofree);
+    FREE_BUFFER(dependencyLibs);
     FREE_BUFFER(outAr);
     FREE_BUFFER(outCmd);
 }
