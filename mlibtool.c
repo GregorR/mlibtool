@@ -1130,28 +1130,50 @@ static void ltinstall(struct Options *opt)
 {
     char *laFile = NULL;
     size_t i, laPos = 0;
+    char *dirC, *dir, *baseC, *base, *ext;
 
     /* skip any options */
     for (i = 1; opt->cmd[i] && opt->cmd[i][0] == '-'; i++);
 
-    /* check if this is a .la file */
-    if (opt->cmd[i]) {
-        char *ext = strrchr(opt->cmd[i], '.');
-        if (ext && !strcmp(ext, ".la")) {
-            laFile = opt->cmd[i];
-            laPos = i;
-        }
+    /* if the command seems invalid, just run it */
+    if (!opt->cmd[i]) {
+        spawn(opt, opt->cmd);
+        return;
     }
 
+    /* check if this is a .la file */
+    ext = strrchr(opt->cmd[i], '.');
+    if (ext && !strcmp(ext, ".la")) {
+        laFile = opt->cmd[i];
+        laPos = i;
+    }
+
+    /* get the directory info */
+    ORL(dirC, strdup, NULL, (opt->cmd[i]));
+    dir = dirname(dirC);
+    ORL(baseC, strdup, NULL, (opt->cmd[i]));
+    base = basename(baseC);
+
     if (!laFile) {
-        /* Simple case: Just run the command directly */
+        char *libsF;
+
+        /* check if there's a .libs version */
+        ORL(libsF, malloc, NULL, (strlen(dir) + strlen(base) + 8));
+        sprintf(libsF, "%s/.libs/%s", dir, base);
+        if (access(libsF, F_OK) == 0) {
+            /* use that one */
+            opt->cmd[i] = libsF;
+        }
+
+        /* Just run the command directly */
         spawn(opt, opt->cmd);
+
+        free(libsF);
 
     } else {
         /* install all the files specified in the .la */
         struct Buffer cpcmd;
         FILE *f;
-        char *dirC, *dir;
         size_t cpLaPos;
 
         /* /bin/install doesn't support symbolic links, so use something that does */
@@ -1163,10 +1185,6 @@ static void ltinstall(struct Options *opt)
         for (i = laPos; opt->cmd[i]; i++)
             WRITE_BUFFER(cpcmd, opt->cmd[i]);
         WRITE_BUFFER(cpcmd, NULL);
-
-        /* get the directory info */
-        ORL(dirC, strdup, NULL, (laFile));
-        dir = dirname(dirC);
 
         /* open the file */
         f = fopen(laFile, "r");
@@ -1215,10 +1233,12 @@ static void ltinstall(struct Options *opt)
             fclose(f);
         }
 
-        free(dirC);
         FREE_BUFFER(cpcmd);
 
     }
+
+    free(baseC);
+    free(dirC);
 }
 
 #endif /* _POSIX_VERSION */
