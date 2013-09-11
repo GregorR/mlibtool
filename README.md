@@ -45,15 +45,15 @@ There are three main use cases of mlibtool:
         mlibtool:
         	cc -O mlibtool.c -o mlibtool || ( cp nomlibtool.sh mlibtool ; chmod 0755 mlibtool )
 
-    and run mlibtool as `mlibtool $(CROSS)libtool`, where `$(CROSS)` is an
-    empty string for native builds and a cross-compiler prefix for
-    cross-builds. Note that `cc` is not a typo, as mlibtool must always be
-    built for the host, and that mlibtool itself is always cross-build capable
-    for supported hosts and targets (which it checks).
+   and run mlibtool as `mlibtool $(CROSS)libtool`, where `$(CROSS)` is an empty
+   string for native builds and a cross-compiler prefix for cross-builds. Note
+   that `cc` is not a typo, as mlibtool must always be built for the host, and
+   that mlibtool itself is always cross-build capable for supported hosts and
+   targets (which it checks).
 
-    This particular use will require that end-users on insane systems have an
-    installed copy of GNU libtool. It is also possible to include a copy of GNU
-    libtool, but that's easiest if you use GNU autoconf.
+   This particular use will require that end-users on insane systems have an
+   installed copy of GNU libtool. It is also possible to include a copy of GNU
+   libtool, but that's easiest if you use GNU autoconf.
 
 
 3. As an adjunct to libtool in autoconf-using packages:
