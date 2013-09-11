@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.2"
+#define MLIBTOOL_VERSION "0.3"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -1195,10 +1195,11 @@ static void ltlink(struct Options *opt)
 
     /* finally, make the .la file */
     if (buildLib) {
+        char *lname, *llink;
         FILE *f = fopen(outName, "w");
         if (!f) {
             perror(outName);
-            exit(1);
+            execLibtool(opt);
         }
 
         fprintf(f, SANE_HEADER
@@ -1244,6 +1245,18 @@ static void ltlink(struct Options *opt)
                    (rpath ? rpath : ""));
 
         fclose(f);
+
+        /* and put an entirely-pointless symlink in .libs (for GNU libtool installs) */
+        ORL(lname, malloc, NULL, (strlen(outDir) + strlen(outBase) + 11));
+        sprintf(lname, "%s/.libs/%s.la", outDir, outBase);
+        ORL(llink, malloc, NULL, (strlen(outBase) + 7));
+        sprintf(llink, "../%s.la", outBase);
+        if (symlink(llink, lname) != 0) {
+            perror(lname);
+            execLibtool(opt);
+        }
+        free(llink);
+        free(lname);
     }
 
     free(afile);
