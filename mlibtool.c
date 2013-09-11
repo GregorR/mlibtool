@@ -428,7 +428,7 @@ static void usage(enum Mode mode)
     printf("Use: mlibtool <target-libtool> [options] --mode=<mode> <command>\n"
         "Options:\n"
         "\t-n|--dry-run: display commands without modifying any files\n"
-        "\t--mode=<mode>: user operation mode <mode>\n"
+        "\t--mode=<mode>: use operational mode <mode>\n"
         "\n"
         "<mode> must be one of the following:\n"
         "\tcompile: compile a source file into a libtool object\n"
