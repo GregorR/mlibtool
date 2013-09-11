@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.6"
+#define MLIBTOOL_VERSION "0.7"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -120,7 +120,7 @@ struct Buffer {
     struct Buffer *buf_ = &(ubuf); \
     while (buf_->bufused >= buf_->bufsz) { \
         buf_->bufsz *= 2; \
-        ORX(buf_->buf, realloc, NULL, (buf_->buf, buf_->bufsz * sizeof(char *))); \
+        ORL(buf_->buf, realloc, NULL, (buf_->buf, buf_->bufsz * sizeof(char *))); \
     } \
     buf_->buf[buf_->bufused++] = (val); \
 } while (0)
@@ -709,7 +709,8 @@ static void ltcompile(struct Options *opt)
 }
 
 /* add a canonicalized library dir to the list */
-static void addLibDir(struct Buffer *libDirs,
+static void addLibDir(struct Options *opt,
+                      struct Buffer *libDirs,
                       struct Buffer *tofree,
                       char *dir)
 {
@@ -751,7 +752,7 @@ static void linkLaFile(struct Options *opt,
     sprintf(aarg, "-L%s/.libs", laDir);
     WRITE_BUFFER(*outCmd, aarg);
     WRITE_BUFFER(*tofree, aarg);
-    addLibDir(libDirs, tofree, aarg + 2);
+    addLibDir(opt, libDirs, tofree, aarg + 2);
 
     /* if there's only a .a, libtool specifies we bring in the whole archive */
     if (buildLib) {
@@ -862,6 +863,7 @@ static void ltlink(struct Options *opt)
         revision = 0,
         module = 0,
         avoidVersion = 0,
+        rpathSpecified = 0,
         insane = 0;
     char *outName = NULL,
          *rpath = NULL;
@@ -871,7 +873,8 @@ static void ltlink(struct Options *opt)
     int buildBinary = 0,
         buildLib = 0,
         buildSo = 0,
-        buildA = 0;
+        buildA = 0,
+        buildPicA = 0;
     char *outDirC = NULL,
          *outDir = NULL,
          *libsDir = NULL,
@@ -886,9 +889,11 @@ static void ltlink(struct Options *opt)
     /* before we can even start, we have to figure out what we're building to
      * know whether to build the command out of static .o or pic .o files */
     for (i = 1; opt->cmd[i]; i++) {
-        if (!strcmp(opt->cmd[i], "-o") && opt->cmd[i+1]) {
-            outName = opt->cmd[i+1];
-            break;
+        if (opt->cmd[i+1]) {
+            if (!strcmp(opt->cmd[i], "-o"))
+                outName = opt->cmd[i+1];
+            else if (!strcmp(opt->cmd[i], "-rpath"))
+                rpathSpecified = 1;
         }
     }
 
@@ -906,6 +911,16 @@ static void ltlink(struct Options *opt)
         }
     }
 
+    /* should we build a .so? */
+    if (buildLib) {
+        if (rpathSpecified) {
+            buildSo = opt->buildShared;
+        } else {
+            buildA = 1;
+            buildPicA = 1;
+        }
+    }
+
     /* allocate our buffers */
     INIT_BUFFER(outCmd);
     INIT_BUFFER(outAr);
@@ -920,7 +935,7 @@ static void ltlink(struct Options *opt)
 
     /* `pwd`/.libs is always in -L */
     WRITE_BUFFER(outCmd, "-L.libs");
-    addLibDir(&libDirs, &tofree, ".libs");
+    addLibDir(opt, &libDirs, &tofree, ".libs");
 
     /* read in the command */
     for (i = 1; opt->cmd[i]; i++) {
@@ -943,7 +958,7 @@ static void ltlink(struct Options *opt)
                 /* need both the -L path specified and .../.libs */
                 WRITE_BUFFER(outCmd, arg);
                 WRITE_BUFFER(dependencyLibs, arg);
-                addLibDir(&libDirs, &tofree, arg + 2);
+                addLibDir(opt, &libDirs, &tofree, arg + 2);
 
                 ORL(llibs, malloc, NULL, (strlen(arg) + 7));
                 sprintf(llibs, "%s/.libs", arg);
@@ -951,7 +966,7 @@ static void ltlink(struct Options *opt)
                 WRITE_BUFFER(outCmd, llibs);
                 WRITE_BUFFER(dependencyLibs, llibs);
                 WRITE_BUFFER(tofree, llibs);
-                addLibDir(&libDirs, &tofree, llibs + 2);
+                addLibDir(opt, &libDirs, &tofree, llibs + 2);
 
             } else if (!strncmp(arg, "-l", 2)) {
                 WRITE_BUFFER(outCmd, arg);
@@ -1024,7 +1039,7 @@ static void ltlink(struct Options *opt)
             ext = strrchr(arg, '.');
             if (ext && !strcmp(ext, ".lo")) {
                 /* make separate versions for the .a and the .so */
-                char *loDirC, *loDir, *loBaseC, *loBase, *loFull;
+                char *loDirC, *loDir, *loBaseC, *loBase, *loPic, *loNonPic;
 
                 /* OK, it's a .lo file, figure out the .libs name */
                 ORL(loDirC, strdup, NULL, (arg));
@@ -1036,15 +1051,23 @@ static void ltlink(struct Options *opt)
                 if (ext) *ext = '\0';
 
                 /* make the .libs/.o version */
-                ORL(loFull, malloc, NULL, (strlen(loDir) + strlen(loBase) + 10));
-                if (buildBinary) {
-                    sprintf(loFull, "%s/%s.o", loDir, loBase);
-                } else {
-                    sprintf(loFull, "%s/.libs/%s.o", loDir, loBase);
-                }
-                WRITE_BUFFER(outAr, loFull);
-                WRITE_BUFFER(outCmd, loFull);
-                WRITE_BUFFER(tofree, loFull);
+                ORL(loPic, malloc, NULL, (strlen(loDir) + strlen(loBase) + 10));
+                sprintf(loPic, "%s/.libs/%s.o", loDir, loBase);
+                ORL(loNonPic, malloc, NULL, (strlen(loDir) + strlen(loBase) + 4));
+                sprintf(loNonPic, "%s/%s.o", loDir, loBase);
+
+                /* which .o we choose depends on a complexicon of situations */
+                if (buildPicA)
+                    WRITE_BUFFER(outAr, loPic);
+                else
+                    WRITE_BUFFER(outAr, loNonPic);
+                if (buildBinary)
+                    WRITE_BUFFER(outCmd, loNonPic);
+                else
+                    WRITE_BUFFER(outCmd, loPic);
+
+                WRITE_BUFFER(tofree, loPic);
+                WRITE_BUFFER(tofree, loNonPic);
 
                 free(loBaseC);
                 free(loDirC);
@@ -1069,15 +1092,10 @@ static void ltlink(struct Options *opt)
     /* make sure an output name was specified */
     if (!outName) {
         outName = "a.out";
+        buildBinary = 1;
         WRITE_BUFFER(outCmd, "-o");
         outNamePos = outCmd.bufused;
         WRITE_BUFFER(outCmd, outName);
-    }
-
-    /* should we build a .so? */
-    if (buildLib) {
-        if (rpath) buildSo = opt->buildShared;
-        else buildA = 1;
     }
 
     /* get the directory names */

@@ -95,9 +95,8 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
 
   Note that the default behavior of both GNU libtool and mlibtool is to build
   both a PIC (for libraries or binaries) and non-PIC (for binaries only) object
-  file. To build only one, reducing your compilation time, use the
-  `-prefer-pic` or `-prefer-non-pic` option along with `$(CFLAGS)`, at your
-  discretion.
+  file. To build only one, reducing your compilation time, use the `-shared` or
+  `-static` option along with `$(CFLAGS)`, at your discretion.
 
   (Note that GNU libtool is typically modified by configure based on
   --enable-static and --enable-shared options; these options may be passed to
