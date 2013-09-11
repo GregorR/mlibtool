@@ -71,7 +71,10 @@ isn't there yet.
 An intentional difference between GNU libtool and mlibtool is the installation
 of .la library wrappers. GNU libtool typically installs them, but they're
 rarely useful; pkg-config has subsumed their role. As such, mlibtool only
-installs the actual .so and .a files, never the .la wrapper.
+installs the actual .so and .a files, never the .la wrapper. Note that this
+also means that a package built by mlibtool must be installed by mlibtool, not
+by GNU libtool; mlibtool will not generate the wrappers that GNU libtool tries
+to install.
 
 mlibtool cannot build .la files from .lo wrappers created by GNU libtool. This
 is because it uses a simple naming scheme for .o files, and so doesn't read

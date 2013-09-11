@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.3"
+#define MLIBTOOL_VERSION "0.4"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -1195,7 +1195,6 @@ static void ltlink(struct Options *opt)
 
     /* finally, make the .la file */
     if (buildLib) {
-        char *lname, *llink;
         FILE *f = fopen(outName, "w");
         if (!f) {
             perror(outName);
@@ -1245,18 +1244,6 @@ static void ltlink(struct Options *opt)
                    (rpath ? rpath : ""));
 
         fclose(f);
-
-        /* and put an entirely-pointless symlink in .libs (for GNU libtool installs) */
-        ORL(lname, malloc, NULL, (strlen(outDir) + strlen(outBase) + 11));
-        sprintf(lname, "%s/.libs/%s.la", outDir, outBase);
-        ORL(llink, malloc, NULL, (strlen(outBase) + 7));
-        sprintf(llink, "../%s.la", outBase);
-        if (symlink(llink, lname) != 0) {
-            perror(lname);
-            execLibtool(opt);
-        }
-        free(llink);
-        free(lname);
     }
 
     free(afile);
@@ -1278,7 +1265,7 @@ static void ltlink(struct Options *opt)
 
 static void ltinstall(struct Options *opt)
 {
-    size_t i, j, laPos = 0;
+    size_t i, j;
     char *dirC, *dir, *baseC, *base, *ext, *target;
     struct Buffer installCmd, cpCmd, tofree;
     int haveInst = 0, haveCp = 0;
@@ -1315,10 +1302,8 @@ static void ltinstall(struct Options *opt)
 
         /* check if this is a .la file */
         ext = strrchr(opt->cmd[i], '.');
-        if (ext && !strcmp(ext, ".la")) {
+        if (ext && !strcmp(ext, ".la"))
             laFile = opt->cmd[i];
-            laPos = i;
-        }
 
         /* get the directory info */
         ORL(dirC, strdup, NULL, (opt->cmd[i]));
@@ -1347,7 +1332,6 @@ static void ltinstall(struct Options *opt)
         } else {
             /* install all the files specified in the .la */
             FILE *f;
-            size_t cpLaPos;
 
             /* open the file */
             f = fopen(laFile, "r");
