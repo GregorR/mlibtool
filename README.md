@@ -18,15 +18,14 @@ There are three main use cases of mlibtool:
    For this option, you probably want to install mlibtool to $PATH, though
    doing so is not strictly necessary.
 
-   If you also have GNU libtool installed to $PATH, simply run the build as
+   If you do have mlibtool and acmlibtool installed to $PATH, simply configure
+   as normal and run the build as
 
-       $ make LIBTOOL="mlibtool libtool"
+       $ make LIBTOOL="`acmlibtool`"
 
-   Otherwise, something like
-
-       $ make LIBTOOL="mlibtool $PWD/libtool"
-
-   but this command depends on where the build puts its local copy of libtool.
+   `acmlibtool` is a utility to find the correct mlibtool invocation for an
+   existing autoconf build. It must be run in the same directory as a generated
+   config.status.
 
 
 2. As a first-choice library building tool:
@@ -60,7 +59,7 @@ There are three main use cases of mlibtool:
 3. As an adjunct to libtool in autoconf-using packages:
 
    This is definitely the trickiest, but it's doable. As a basis, include
-   mlibtool.c, and after LT_INIT in configure.ac, add something like this:
+   mlibtool.c, and after `LT_INIT` in configure.ac, add something like this:
 
        if cc $srcdir/mlibtool.c -o mlibtool; then
            LIBTOOL="$ac_pwd/mlibtool $LIBTOOL"
@@ -84,8 +83,8 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
         	cc -O mlibtool.c -o mlibtool || ( cp nomlibtool.sh mlibtool ; chmod 0755 mlibtool )
 
 
-* Build object files as .lo files instead of .o files, and prefix the command
-  to build them with `$(LIBTOOL) --mode=compile`:
+* Build object files destined for libraries as .lo files instead of .o files,
+  and prefix the command to build them with `$(LIBTOOL) --mode=compile`:
 
         %.lo: %.c
         	$(LIBTOOL) --mode=compile $(CC) $(CFLAGS) -c $< -o $@
@@ -100,10 +99,12 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
   `-prefer-pic` or `-prefer-non-pic` option along with `$(CFLAGS)`, at your
   discretion.
 
+  (Note that GNU libtool is typically modified by configure based on
+  --enable-static and --enable-shared options; these options may be passed to
+  mlibtool, but are best avoided in preference of explicit specification)
 
-* Build shared libraries as .la files instead of .so/.dylib/.dll files. Static
-  libraries can be built this way as well, and of course must be if .lo files
-  are used.
+
+* Build shared libraries as .la files instead of .so/.dylib/.dll files.
 
   To build a .la file, simply create a compilation line as if you were building
   a binary, and prefix it with `$(LIBTOOL) --mode=link`:
@@ -154,9 +155,9 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
   files, specifying library dependencies as .la files (for local dependencies)
   or -l as usual:
 
-        mlibtool: mlibtool.lo libmlibtool.la
+        mlibtool: mlibtool.o libmlibtool.la
         	$(LIBTOOL) --mode=link $(CC) $(CCLDFLAGS) \
-        	    mlibtool.lo libmlibtool.la \
+        	    mlibtool.o libmlibtool.la \
         	    -o $@
 
 

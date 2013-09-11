@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.5"
+#define MLIBTOOL_VERSION "0.6"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -86,7 +86,9 @@
 int execv(const char *path, char *const argv[]);
 int main(int argc, char **argv)
 {
-    execv(argv[1], argv + 1);
+    int i;
+    for (i = 1; i < argc && argv[i][0] == '-'; i++);
+    execv(argv[i], argv + i);
     return 1;
 }
 #else
@@ -210,6 +212,9 @@ enum Mode {
 /* options necessary to handle modes */
 struct Options {
     int dryRun, quiet, retryIfFail;
+    int buildShared, buildStatic; /* also effects -fPIC in .o files */
+
+    int arglt; /* where the libtool command starts */
     int argc;
     char **argv, **cmd;
 };
@@ -217,10 +222,14 @@ struct Options {
 /* redirect to libtool */
 static void execLibtool(struct Options *opt)
 {
+    int arglt = opt->arglt;
+    char **argv = opt->argv;
+
     if (!opt->quiet)
-        fprintf(stderr, "mlibtool: unsupported configuration, trying libtool (%s)\n", opt->argv[1]);
-    execvp(opt->argv[1], opt->argv + 1);
-    perror(opt->argv[1]);
+        fprintf(stderr, "mlibtool: unsupported configuration, trying libtool (%s)\n", argv[arglt]);
+
+    execvp(argv[arglt], argv + arglt);
+    perror(argv[arglt]);
     exit(1);
 }
 
@@ -319,12 +328,35 @@ int main(int argc, char **argv)
     int sane = 0;
     memset(&opt, 0, sizeof(opt));
 
-    /* first argument must be target libtool */
-    if (argc < 2 || argv[1][0] == '-') {
-        usage(MODE_UNKNOWN);
-        exit(1);
+    /* mlibtool-specific options come first */
+    for (argi = 1; argi < argc && argv[argi][0] == '-'; argi++) {
+        char *arg = argv[argi];
+
+        if (!strcmp(arg, "--enable-static")) {
+            opt.buildStatic = 1;
+
+        } else if (!strcmp(arg, "--enable-shared")) {
+            opt.buildShared = 1;
+
+        } else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
+            usage(MODE_UNKNOWN);
+            exit(0);
+
+        } else {
+            usage(MODE_UNKNOWN);
+            exit(1);
+
+        }
+
     }
-    for (argi = 1; argi < argc && argv[argi][0] != '-'; argi++);
+
+    /* if neither static nor shared were specified, enabled both */
+    if (!opt.buildStatic && !opt.buildShared)
+        opt.buildStatic = opt.buildShared = 1;
+
+    /* next argument must be target libtool */
+    opt.arglt = argi;
+    for (; argi < argc && argv[argi][0] != '-'; argi++);
 
     /* collect arguments up to --mode */
     for (; argi < argc; argi++) {
@@ -426,17 +458,22 @@ int main(int argc, char **argv)
 
 static void usage(enum Mode mode)
 {
-    printf("Use: mlibtool <target-libtool> [options] --mode=<mode> <command>\n"
-        "Options:\n"
-        "\t-n|--dry-run: display commands without modifying any files\n"
-        "\t--mode=<mode>: use operational mode <mode>\n"
-        "\n"
-        "<mode> must be one of the following:\n"
-        "\tcompile: compile a source file into a libtool object\n"
-        /*"\texecute: automatically set library path, then run a program\n"*/
-        "\tinstall: install libraries or executables\n"
-        "\tlink: create a library or an executable\n"
-        "\n");
+    printf("Use: mlibtool [mlibtool-options] <target-libtool> [options] --mode=<mode> <command>\n"
+           "\n"
+           "mlibtool options:\n"
+           "\t--enable-static: build non-PIC .o files and build .a files\n"
+           "\t--enable-shared: build PIC .o files and build .so files\n"
+           "\t(if neither is specified, both --enable-static and --enable-shard are assumed)\n"
+           "\n"
+           "Options:\n"
+           "\t-n|--dry-run: display commands without modifying any files\n"
+           "\t--mode=<mode>: use operational mode <mode>\n"
+           "\n");
+    printf("<mode> must be one of the following:\n"
+           "\tcompile: compile a source file into a libtool object\n"
+           "\tinstall: install libraries or executables\n"
+           "\tlink: create a library or an executable\n"
+           "\n");
 
     if (mode != MODE_UNKNOWN)
         printf("Recognized mode options:\n");
@@ -563,10 +600,14 @@ static void ltcompile(struct Options *opt)
     if (preferPic && preferNonPic)
         preferPic = preferNonPic = 0;
 
-    if (preferPic || !preferNonPic)
+    if (preferPic)
         buildPic = 1;
-    if (preferNonPic || !preferPic)
+    else if (!preferNonPic)
+        buildPic = opt->buildShared;
+    if (preferNonPic)
         buildNonPic = 1;
+    else if (!preferPic)
+        buildNonPic = opt->buildStatic;
 
     /* if we don't have an output name, guess */
     if (!outName) {
@@ -614,10 +655,10 @@ static void ltcompile(struct Options *opt)
     if (!opt->dryRun) mkdir(libsDir, 0777); /* ignore errors */
 
     /* and generate the pic/non-pic names */
-    ORL(picFile, malloc, NULL, (strlen(libsDir) + strlen(outBase) + 7));
-    ORL(nonPicFile, malloc, NULL, (strlen(libsDir) + strlen(outBase) + 7));
-    sprintf(picFile, "%s/%s.sh.o", libsDir, outBase);
-    sprintf(nonPicFile, "%s/%s.st.o", libsDir, outBase);
+    ORL(picFile, malloc, NULL, (strlen(libsDir) + strlen(outBase) + 4));
+    sprintf(picFile, "%s/%s.o", libsDir, outBase);
+    ORL(nonPicFile, malloc, NULL, (strlen(outDir) + strlen(outBase) + 4));
+    sprintf(nonPicFile, "%s/%s.o", outDir, outBase);
 
     /* now do the actual building */
     if (buildNonPic) {
@@ -652,8 +693,8 @@ static void ltcompile(struct Options *opt)
     }
     fprintf(f, SANE_HEADER
                PACKAGE_HEADER
-               "pic_object='.libs/%s.sh.o'\n"
-               "non_pic_object='.libs/%s.st.o'\n",
+               "pic_object='.libs/%s.o'\n"
+               "non_pic_object='%s.o'\n",
                outBase, outBase);
     fclose(f);
 
@@ -843,7 +884,7 @@ static void ltlink(struct Options *opt)
 
 
     /* before we can even start, we have to figure out what we're building to
-     * know whether to build the command out of .st.o or .sh.o files */
+     * know whether to build the command out of static .o or pic .o files */
     for (i = 1; opt->cmd[i]; i++) {
         if (!strcmp(opt->cmd[i], "-o") && opt->cmd[i+1]) {
             outName = opt->cmd[i+1];
@@ -855,7 +896,8 @@ static void ltlink(struct Options *opt)
         ext = strrchr(outName, '.');
         if (ext && !strcmp(ext, ".la")) {
             /* it's a libtool library */
-            buildLib = buildA = 1;
+            buildLib = 1;
+            buildA = opt->buildStatic;
 
         } else {
             /* it's a binary */
@@ -994,8 +1036,12 @@ static void ltlink(struct Options *opt)
                 if (ext) *ext = '\0';
 
                 /* make the .libs/.o version */
-                ORL(loFull, malloc, NULL, (strlen(loDir) + strlen(loBase) + 13));
-                sprintf(loFull, "%s/.libs/%s.s%c.o", loDir, loBase, (buildBinary ? 't' : 'h'));
+                ORL(loFull, malloc, NULL, (strlen(loDir) + strlen(loBase) + 10));
+                if (buildBinary) {
+                    sprintf(loFull, "%s/%s.o", loDir, loBase);
+                } else {
+                    sprintf(loFull, "%s/.libs/%s.o", loDir, loBase);
+                }
                 WRITE_BUFFER(outAr, loFull);
                 WRITE_BUFFER(outCmd, loFull);
                 WRITE_BUFFER(tofree, loFull);
@@ -1029,8 +1075,10 @@ static void ltlink(struct Options *opt)
     }
 
     /* should we build a .so? */
-    if (buildLib)
-        if (rpath) buildSo = 1;
+    if (buildLib) {
+        if (rpath) buildSo = opt->buildShared;
+        else buildA = 1;
+    }
 
     /* get the directory names */
     ORL(outDirC, strdup, NULL, (outName));
