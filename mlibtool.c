@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.4"
+#define MLIBTOOL_VERSION "0.5"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -43,7 +43,8 @@
 #define SANE "__linux__ || " /* Linux */ \
              "__FreeBSD_kernel__ || __FreeBSD__ || __NetBSD__ || " \
              "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
-             "__GNU__" /* GNU Hurd */
+             "__GNU__ || " /* GNU Hurd */ \
+             "(__sun && __svr4__)" /* Solaris */
 
 /* our binary runner script */
 #define BIN_SCRIPT_1 "#!/bin/sh\n" \
@@ -1118,7 +1119,8 @@ static void ltlink(struct Options *opt)
     if (buildSo) {
         char *sopath = NULL,
              *longpath = NULL,
-             *linkpath = NULL;
+             *linkpath = NULL,
+             *sonameFlag = NULL;
 
         if (!avoidVersion) {
             /* we have three filenames:
@@ -1162,8 +1164,15 @@ static void ltlink(struct Options *opt)
             unlink(linkpath);
 
         /* set up the link command */
+        ORL(sonameFlag, malloc, NULL, (strlen(soname) + 8));
+        sprintf(sonameFlag, "-Wl,-h,%s", soname);
         WRITE_BUFFER(outCmd, "-shared");
-        outCmd.buf[outNamePos] = sopath;
+        WRITE_BUFFER(outCmd, sonameFlag);
+        WRITE_BUFFER(tofree, sonameFlag);
+        outCmd.buf[outNamePos] = longpath ? longpath : sopath;
+
+        /* because -Wl is nonportable, allow retry on fail */
+        opt->retryIfFail = 1;
 
         /* link */
         WRITE_BUFFER(outCmd, NULL);
@@ -1171,12 +1180,6 @@ static void ltlink(struct Options *opt)
         outCmd.bufused--;
 
         if (!opt->dryRun && !avoidVersion) {
-            /* move it to the proper name */
-            if ((tmpi = rename(sopath, longpath)) < 0) {
-                perror(longpath);
-                exit(1);
-            }
-
             /* link in the shorter names */
             if ((tmpi = symlink(longname, sopath)) < 0) {
                 perror(sopath);
