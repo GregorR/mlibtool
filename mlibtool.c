@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.7"
+#define MLIBTOOL_VERSION "0.8"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -49,12 +49,11 @@
 /* our binary runner script */
 #define BIN_SCRIPT_1 "#!/bin/sh\n" \
                      PACKAGE_HEADER \
-                     "DIR=`dirname \"$0\"`\n" \
-                     "BIN=`basename \"$0\"`\n" \
                      "LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:}"
 #define BIN_SCRIPT_2 "\"\n" \
                      "export LD_LIBRARY_PATH\n" \
-                     "exec \"$DIR/.libs/$BIN\" \"$@\"\n"
+                     "exec \""
+#define BIN_SCRIPT_3 "\" \"$@\"\n"
 
 /* macro to fail with perror if a function fails */
 #define ORX(into, func, bad, args) do { \
@@ -1124,7 +1123,9 @@ static void ltlink(struct Options *opt)
 
         /* then make the wrapper */
         if (!opt->dryRun) {
+            char *absName;
             FILE *f;
+
             f = fopen(outName, "w");
             if (!f) {
                 perror(outName);
@@ -1139,7 +1140,17 @@ static void ltlink(struct Options *opt)
                 fputs(libDirs.buf[i], f);
             }
 
-            if (fputs(BIN_SCRIPT_2, f) == EOF) {
+            fputs(BIN_SCRIPT_2, f);
+
+            /* then the program name */
+            if ((absName = realpath(realName, NULL))) {
+                fputs(absName, f);
+                free(absName);
+            } else {
+                fputs(realName, f);
+            }
+
+            if (fputs(BIN_SCRIPT_3, f) == EOF) {
                 perror(outName);
                 execLibtool(opt);
             }
