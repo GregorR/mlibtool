@@ -58,12 +58,12 @@ There are three main use cases of mlibtool:
 
 3. As an adjunct to libtool in autoconf-using packages:
 
-   This is definitely the trickiest, but it's doable. As a basis, include
-   mlibtool.c, and after `LT_INIT` in configure.ac, add something like this:
+   mlibtool includes a set of autoconf macros in mlibtool.m4 . See the
+   autotools-template directory for an example of how to use it.
 
-       if cc $srcdir/mlibtool.c -o mlibtool; then
-           LIBTOOL="$ac_pwd/mlibtool $LIBTOOL"
-       fi
+   autoconf users interested in mlibtool may be interested in one of Gregor's
+   other projects, autoconf-lean
+   ( http://bitbucket.org/GregorR/autoconf-lean ).
 
 
 Life with Libtool
