@@ -174,6 +174,42 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
         	rm -f mlibtool libmlibtool.la *.lo *.o
 
 
+Manifest
+========
+
+The included files and purpose of each:
+
+* mlibtool.c: mlibtool itself
+
+* acmlibtool: script which creates an mlibtool invocation line from a configured autoconf package
+
+* autotools-template/: an example of an autotools (autoconf+automake+libtool) setup using mlibtool
+
+* Makefile: a simple, but unnecessary, makefile for mlibtool.c
+
+* mlibtool.m4: autoconf macros for mlibtool
+
+* nomlibtool.sh: a simple replacement for mlibtool for situations when it's
+  easier to copy nomlibtool in place than to have a variable libtool invocation
+  line (e.g. simple Makefiles)
+
+* README.md: this README
+
+Files needed by purpose:
+
+* Speeding up libtool-utilizing builds (install to `$PATH`):
+
+  mlibtool, acmlibtool
+
+* As a first-choice library-building tool:
+
+  mlibtool.c, nomlibtool.sh (depending on configuration)
+
+* As an adjunct to libtool in autoconf-using packages:
+
+  mlibtool.c, mlibtool.m4
+
+
 Bugs and Incompatibilities
 ==========================
 
