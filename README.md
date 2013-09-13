@@ -1,6 +1,10 @@
 mlibtool
 ========
 
+(Readability note: If you are reading this on bitbucket, consider reading it on
+github. github's markdown support is much better.
+http://github.com/GregorR/mlibtool )
+
 mlibtool is the libtool accelerator. It does not replace the entire broad
 functionality of GNU libtool, but implements the sane uses of libtool on sane
 systems. On insane systems, mlibtool simply calls libtool, maintaining
