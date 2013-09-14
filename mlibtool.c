@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.8"
+#define MLIBTOOL_VERSION "0.9"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -40,11 +40,14 @@
 
 /* systems we define as sane, based on preprocessor macros on the /target/ (not
  * this build) */
-#define SANE "__linux__ || " /* Linux */ \
-             "__FreeBSD_kernel__ || __FreeBSD__ || __NetBSD__ || " \
-             "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
-             "__GNU__ || " /* GNU Hurd */ \
-             "(__sun && __svr4__)" /* Solaris */
+#define SANE "__ELF__ && (" /* we only support ELF */ \
+               "__linux__ || " /* Linux */ \
+               "__FreeBSD_kernel__ || __FreeBSD__ || __NetBSD__ || " \
+               "__OpenBSD__ || __DragonFly__ || " /* BSD family */ \
+               "__GNU__ || " /* GNU Hurd */ \
+               "(__svr4__ && !_hpux && !__hpux)" \
+                 /* SVR4 and derivatives (e.g. Solaris) which are not HP-UX */ \
+             ")"
 
 /* our binary runner script */
 #define BIN_SCRIPT_1 "#!/bin/sh\n" \
@@ -1204,8 +1207,6 @@ static void ltlink(struct Options *opt)
              * (1) the soname, .so.major
              * (2) the long name, .so.major.minor.revision
              * (3) the linker name, .software
-             *
-             * We compile with the soname as output to avoid needing -Wl,-soname.
              */
             ORL(soname, malloc, NULL, (strlen(outBase) + 4*sizeof(int) + 5));
             sprintf(soname, "%s.so.%d", outBase, major);
@@ -1247,9 +1248,6 @@ static void ltlink(struct Options *opt)
         WRITE_BUFFER(outCmd, sonameFlag);
         WRITE_BUFFER(tofree, sonameFlag);
         outCmd.buf[outNamePos] = longpath ? longpath : sopath;
-
-        /* because -Wl is nonportable, allow retry on fail */
-        opt->retryIfFail = 1;
 
         /* link */
         WRITE_BUFFER(outCmd, NULL);
