@@ -13,7 +13,7 @@
  * http://bitbucket.org/GregorR/mlibtool
  * http://github.com/GregorR/mlibtool
  */
-#define MLIBTOOL_VERSION "0.9"
+#define MLIBTOOL_VERSION "0.10"
 
 /*
  * Copyright (c) 2013 Gregor Richards
@@ -132,14 +132,90 @@ struct Buffer {
 } while (0)
 
 
+/* Generate a filename to cache sanity (allocates) */
+static char *cachedSanityName(char *cc, char **argv)
+{
+    int i;
+    char *repr = NULL;
+    char *dirC, *dir, *ret;
+
+    for (i = 0; argv[i]; i++) {
+        char *ext;
+        if (!strcmp(argv[i], "-o") && argv[i+1]) {
+            repr = argv[i+1];
+            break;
+
+        } else if ((ext = strrchr(argv[i], '.'))) {
+            if (ext[1] == 'l' && (ext[2] == 'a' || ext[2] == 'o')) {
+                repr = argv[i];
+                break;
+            }
+        }
+    }
+
+    if (repr == NULL) {
+        /* nothing to use! */
+        return NULL;
+    }
+
+    /* get its directory name */
+    ORX(dirC, strdup, NULL, (repr));
+    dir = dirname(dirC);
+
+    /* and make the cache name */
+    ORX(ret, malloc, NULL, (strlen(dir) + strlen(cc) + 13));
+    sprintf(ret, "%s/.libs", dir);
+    mkdir(ret, 0777);
+    sprintf(ret, "%s/.libs/sane.%s", dir, cc);
+    free(dirC);
+    return ret;
+}
+
+/* Cache the sanity of this system if possible */
+static void systemCacheSanity(char *cc, char **argv, int sane)
+{
+    FILE *f;
+    char *cacheName = cachedSanityName(cc, argv);
+    if (!cacheName) return;
+    if (access(cacheName, F_OK) == 0) {
+        free(cacheName);
+        return;
+    }
+    f = fopen(cacheName, "w");
+    if (f) {
+        fwrite(sane ? "1" : "0", 1, 1, f);
+        fclose(f);
+    }
+    free(cacheName);
+}
+
+/* Check the cache for system sanity */
+static int systemCachedSanity(char *cc, char **argv)
+{
+    FILE *f;
+    int cs = -1;
+    char *cacheName = cachedSanityName(cc, argv);
+    if (!cacheName) return -1;
+    f = fopen(cacheName, "r");
+    if (f) {
+        cs = fgetc(f);
+        if (cs == EOF) cs = -1;
+        else cs -= '0';
+        fclose(f);
+    }
+    free(cacheName);
+    return cs;
+}
+
 /* Is this system sane? */
-static int systemIsSane(char *cc)
+static int systemIsSane(char *cc, char **argv)
 {
     pid_t pid;
     int pipei[2], pipeo[2];
     int tmpi, sane, insane = 0;
     size_t i, bufused;
     ssize_t rd;
+    int slashes = 1;
 #define BUFSZ 32
     char buf[BUFSZ];
 
@@ -148,6 +224,13 @@ static int systemIsSane(char *cc)
         "#if " SANE "\n"
         "SYSTEM_IS_SANE\n"
         "#endif";
+
+    /* we can cache sanity if we can make a simple filename */
+    if (strchr(cc, '/') == NULL) {
+        int cachedSanity = systemCachedSanity(cc, argv);
+        if (cachedSanity != -1) return cachedSanity;
+        slashes = 0;
+    }
 
     ORX(tmpi, pipe, -1, (pipei));
     ORX(tmpi, pipe, -1, (pipeo));
@@ -199,6 +282,11 @@ static int systemIsSane(char *cc)
 
     /* finished */
     if (insane) sane = 0;
+
+    /* cache it */
+    if (!slashes)
+        systemCacheSanity(cc, argv, sane);
+
     return sane;
 }
 
@@ -305,7 +393,7 @@ static int checkLoSanity(struct Options *opt, char *cc)
     }
 
     if (!foundlo && cc)
-        return systemIsSane(cc);
+        return systemIsSane(cc, opt->cmd);
 
     return sane;
 }
@@ -428,7 +516,7 @@ int main(int argc, char **argv)
     /* next argument is the compiler, use that to check for sanity */
     if (!insane) {
         if (mode == MODE_COMPILE) {
-            sane = systemIsSane(opt.cmd[0]);
+            sane = systemIsSane(opt.cmd[0], opt.cmd);
         } else if (mode == MODE_LINK) {
             sane = checkLoSanity(&opt, opt.cmd[0]);
         } else if (mode == MODE_INSTALL) {
