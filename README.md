@@ -116,7 +116,7 @@ libtool (of any variety) is quite useful whether you're using autoconf or not.
         	$(LIBTOOL) --mode=link $(CC) $(CCLDFLAGS) $(OBJS) $(DEPLIBS) -o $@
 
   To link a shared library against other local libtool-built shared object
-  files, add the .la files to think link line. Additional flags along with
+  files, add the .la files to the link line. Additional flags along with
   `$(CFLAGS)`/`$(CCLDFLAGS)` are supported, and one, `-rpath`, is *required* to
   build a shared library:
 
