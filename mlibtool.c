@@ -1386,7 +1386,7 @@ static void ltlink(struct Options *opt)
         }
 
         fprintf(f, "old_library='%s'\n"
-                   "inherited_linker_flags=''\n", afile);
+                   "inherited_linker_flags=''\n", afile ? afile : "");
 
         fprintf(f, "dependency_libs='");
         for (i = 0; i < dependencyLibs.bufused; i++)
@@ -1525,6 +1525,7 @@ static void ltinstall(struct Options *opt)
                         char *dlibs = lbuf + 13 + (lbuf[0] == 'l' ? 2 : 0);
                         char *end = strrchr(dlibs, '\'');
                         if (end) *end = '\0';
+                        if (!dlibs[0]) continue;
 
                         /* now go one by one through the libs */
                         part = strtok_r(dlibs, " ", &saveptr);
